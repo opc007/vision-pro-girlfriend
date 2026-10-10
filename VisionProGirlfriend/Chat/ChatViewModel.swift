@@ -15,6 +15,7 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var messages: [ChatMessage] = []
     @Published var input: String = ""
     @Published private(set) var isReplying = false
+    @Published private(set) var isSpeaking = false
     @Published private(set) var statusText = "准备中…"
 
     let audioPlayer = TTSAudioPlayer()
@@ -27,6 +28,9 @@ final class ChatViewModel: ObservableObject {
 
     private let greeting = "你好呀，我是七宝～今天想聊点什么？"
 
+    /// 发给模型的历史预算（字符数）。超了就把最早的丢掉，长对话不会把 token 撑爆。
+    private let historyCharBudget = 4_000
+
     init(config: AppConfig = AppConfig()) {
         self.config = config
         self.deepSeekClient = DeepSeekClient(config: config)
@@ -35,6 +39,13 @@ final class ChatViewModel: ObservableObject {
         let client = MiniMaxTTSClient(config: config, audioPlayer: audioPlayer)
         client.delegate = self
         self.ttsClient = client
+
+        // 真的播完一段（不是「刚排进队列」），再把状态切回空闲
+        audioPlayer.setPlaybackFinishedHandler { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.handlePlaybackFinished()
+            }
+        }
     }
 
     // MARK: - 生命周期
@@ -79,16 +90,14 @@ final class ChatViewModel: ObservableObject {
             messages.removeFirst()
         }
 
-        // 第一个是七宝的人设，后面才是这轮对话
-        var history = [DeepSeekClient.Message(role: "system", content: config.personaPrompt)]
-        history.append(contentsOf: messages.map {
-            DeepSeekClient.Message(role: $0.role.rawValue, content: $0.text)
-        })
+        // 第一个是七宝的人设，后面才是这轮对话（超预算的从最早的开始丢）
+        let history = buildHistory()
         let replyID = UUID()
         messages.append(ChatMessage(id: replyID, role: .assistant, text: ""))
 
         statusText = "七宝正在想…"
         audioPlayer.stopAll()
+        isSpeaking = false
 
         guard let tts = ttsClient else {
             statusText = "语音通道没建起来"
@@ -107,7 +116,8 @@ final class ChatViewModel: ObservableObject {
                 try await tts.ensureStarted()
 
                 try await self.deepSeekClient.stream(messages: history) { delta in
-                    tts.append(delta)
+                    // 气泡里显示原文，喂给 TTS 的是清洗过的版本
+                    tts.append(SpeechTextSanitizer.sanitize(delta))
                     Task { @MainActor [weak self] in
                         self?.appendToReply(delta, id: replyID)
                     }
@@ -134,6 +144,7 @@ final class ChatViewModel: ObservableObject {
         ttsClient?.interrupt()
         audioPlayer.stopAll()
         isReplying = false
+        isSpeaking = false
         statusText = "已打断"
     }
 
@@ -145,10 +156,34 @@ final class ChatViewModel: ObservableObject {
         audioPlayer.stopAll()
         messages = [ChatMessage(role: .assistant, text: greeting)]
         isReplying = false
+        isSpeaking = false
         statusText = "重新开始"
     }
 
     // MARK: - 内部
+
+    /// 拼这次要发给 DeepSeek 的消息。
+    /// 第一条永远是七宝的人设；对话历史按字符预算从新到旧取，超预算的最早那条丢掉。
+    @MainActor
+    private func buildHistory() -> [DeepSeekClient.Message] {
+        var history = [DeepSeekClient.Message(role: "system", content: config.personaPrompt)]
+
+        var used = 0
+        var picked: [ChatMessage] = []
+        for message in messages.reversed() {
+            guard !message.text.isEmpty else { continue }
+            let cost = message.text.count
+            // picked 为空时无条件收下，保证最新那条（用户刚发的）在里面
+            if used + cost > historyCharBudget, !picked.isEmpty { break }
+            used += cost
+            picked.append(message)
+        }
+
+        history.append(contentsOf: picked.reversed().map {
+            DeepSeekClient.Message(role: $0.role.rawValue, content: $0.text)
+        })
+        return history
+    }
 
     @MainActor
     private func appendToReply(_ delta: String, id: UUID) {
@@ -164,7 +199,7 @@ final class ChatViewModel: ObservableObject {
             messages[index].text = "（没拿到内容，检查一下 Key 和网络）"
         }
         isReplying = false
-        statusText = audioPlayer.isSpeaking ? "七宝在说…" : "想好要聊什么了吗？"
+        statusText = isSpeaking ? "七宝在说…" : "想好要聊什么了吗？"
     }
 
     @MainActor
@@ -185,7 +220,16 @@ final class ChatViewModel: ObservableObject {
     @MainActor
     private func handleSentence(_ mp3Data: Data) {
         audioPlayer.enqueue(mp3: mp3Data)
+        isSpeaking = true
         if isReplying { statusText = "七宝在说…" }
+    }
+
+    /// 播放器确认真的播完了（已留了静音间隔，不会每句跳一次）
+    @MainActor
+    private func handlePlaybackFinished() {
+        isSpeaking = audioPlayer.isSpeaking
+        if isReplying { statusText = "七宝在说…" }
+        else { statusText = "想好要聊什么了吗？" }
     }
 
     @MainActor
@@ -194,7 +238,7 @@ final class ChatViewModel: ObservableObject {
         case let .failed(message):
             statusText = "语音连接异常：\(message)"
         case .ready, .idle:
-            if !isReplying { statusText = "想好要聊什么了吗？" }
+            if !isReplying, !isSpeaking { statusText = "想好要聊什么了吗？" }
         case .connecting:
             statusText = "语音通道连接中…"
         case .speaking:

@@ -62,6 +62,11 @@ final class MiniMaxTTSClient {
     private var receiveTask: Task<Void, Never>?
     private var pingTask: Task<Void, Never>?
     private var flushTask: DispatchWorkItem?
+    private var retryTask: DispatchWorkItem?
+
+    /// 最近一条 task_continue 的原文，2205 时要重发
+    private var lastSentText = ""
+    private var retryCount = 0
 
     private var state: State = .idle
     private var pendingText = ""
@@ -171,6 +176,10 @@ final class MiniMaxTTSClient {
             guard let self else { return }
             self.flushTask?.cancel()
             self.flushTask = nil
+            self.retryTask?.cancel()
+            self.retryTask = nil
+            self.lastSentText = ""
+            self.retryCount = 0
             self.pendingText = ""
             self.sentenceBuffer.removeAll()
             self.audioPlayer.stopAll()
@@ -273,6 +282,12 @@ final class MiniMaxTTSClient {
         if let base = json["base_resp"] as? [String: Any],
            let code = (base["status_code"] as? NSNumber)?.intValue,
            code != 0 {
+            // 2205 = 待合成文本堆太多了（发得比合成快）。
+            // 官方说明这是软失败：连接和会话都不关，只要晚点重发这一条 task_continue。
+            if code == 2205 {
+                scheduleRetryLocked()
+                return
+            }
             failLocked(MiniMaxTTSError.server(code: code, message: (base["status_msg"] as? String) ?? "未知错误"))
             return
         }
@@ -361,7 +376,29 @@ final class MiniMaxTTSClient {
         pendingText = ""
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         // 注意：原文标点必须保留，MiniMax 靠标点断句，删掉会导致朗读一顿一顿的。
+        lastSentText = text
+        retryCount = 0
         send(["event": "task_continue", "text": text])
+    }
+
+    /// 2205 的退避重发：晚一点把上一条 task_continue 再发一遍，不重连也不重发 task_start。
+    private func scheduleRetryLocked() {
+        guard !lastSentText.isEmpty else { return }
+        guard retryCount < 3 else {
+            NSLog("[TTS] 2205 重试 3 次仍失败，放弃这一条")
+            return
+        }
+        retryCount += 1
+        retryTask?.cancel()
+        let text = lastSentText
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.send(["event": "task_continue", "text": text])
+        }
+        retryTask = work
+        let delay = 0.6 * Double(retryCount)
+        NSLog("[TTS] 2205，第 \(retryCount) 次重发，\(delay) 秒后")
+        stateQueue.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func send(_ payload: [String: Any]) {
@@ -425,12 +462,7 @@ final class MiniMaxTTSClient {
     private func closeLocked() {
         // 先把还挂着的人放掉，再拆连接，否则他们会干等到超时
         resumeAllWaiters(with: .failure(CancellationError()))
-        receiveTask?.cancel()
-        receiveTask = nil
-        pingTask?.cancel()
-        pingTask = nil
-        flushTask?.cancel()
-        flushTask = nil
+        cancelPendingWorkLocked()
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
         pendingText = ""
@@ -440,16 +472,24 @@ final class MiniMaxTTSClient {
 
     private func failLocked(_ error: Error) {
         resumeAllWaiters(with: .failure(error))
+        cancelPendingWorkLocked()
+        socket?.cancel(with: .goingAway, reason: nil)
+        socket = nil
+        pendingText = ""
+        sentenceBuffer.removeAll()
+        transition(to: .failed(error.localizedDescription))
+    }
+
+    private func cancelPendingWorkLocked() {
         receiveTask?.cancel()
         receiveTask = nil
         pingTask?.cancel()
         pingTask = nil
         flushTask?.cancel()
         flushTask = nil
-        socket?.cancel(with: .goingAway, reason: nil)
-        socket = nil
-        pendingText = ""
-        sentenceBuffer.removeAll()
-        transition(to: .failed(error.localizedDescription))
+        retryTask?.cancel()
+        retryTask = nil
+        lastSentText = ""
+        retryCount = 0
     }
 }

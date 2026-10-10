@@ -13,10 +13,16 @@
 
 ```
 你打字 → DeepSeekClient(SSE) ─┬─→ 聊天窗口气泡
-                                └─→ MiniMaxTTSClient(WebSocket t2a_v2_bidi)
-                                        └─→ TTSAudioPlayer(AVAudioEngine 播放)
-                                                └─→ 实时音量 → 音量驱动 jawOpen
+                                └─→ SpeechTextSanitizer（去 Markdown/emoji，保留标点）
+                                       └─→ MiniMaxTTSClient(WebSocket t2a_v2_bidi)
+                                               └─→ TTSAudioPlayer(AVAudioEngine 播放)
+                                                       └─→ 实时音量 → 音量驱动 jawOpen
 ```
+
+### 说话时可以直接打字打断
+
+七宝还在说的时候你开始打字，这一轮会自动中断（`task_cancel` + 停播放器）。
+顶栏也会出现「说一句…直接打字就能打断她」的提示。
 
 ## 环境要求
 
@@ -93,17 +99,44 @@ VisionProGirlfriend/
 ├─ Services/
 │  ├─ DeepSeekClient.swift             SSE 流式聊天
 │  ├─ MiniMaxTTSClient.swift           WebSocket t2a_v2_bidi 状态机
+│  ├─ SpeechTextSanitizer.swift        喂给 TTS 前的文本清洗（保标点）
 │  └─ TTSAudioPlayer.swift             AVAudioEngine 播放 + 音量输出
 ├─ Avatar/
 │  ├─ AvatarSceneView.swift            RealityView 场景 + 逐帧订阅
 │  └─ PlaceholderAvatar.swift          占位 3D 人 + jawOpen 驱动
 └─ Support/                            小工具（hex 解码、ID 常量）
+
+scripts/
+├─ check_pbxproj.py                    不用 Xcode 的工程文件体检脚本
+└─ test_speech_sanitizer.swift         文本清洗的断言测试
 ```
 
-`scripts/check_pbxproj.py` 是个不用 Xcode 的工程文件体检脚本，改完 pbxproj 可以跑一下：
+### 想改沉浸空间的观感
+
+`VisionProGirlfriendApp.swift` 里：
+
+```swift
+@State private var immersionStyle: ImmersionStyle = .full
+...
+.immersionStyle(selection: $immersionStyle, in: .full)
+```
+
+`.full` 关掉穿透（纯黑背景，适合现在的占位模型）；想让人看见自己房间就改成 `.mixed`。
+也可以 `in: .full, .mixed` 两个都给，运行时切。
+
+## 自检脚本
+
+改完 pbxproj 跑一下结构体检：
 
 ```bash
 python3 scripts/check_pbxproj.py
+```
+
+文本清洗的断言测试，只要有 `swiftc` 就能跑（Mac 上 `xcrun swiftc` 也行）：
+
+```bash
+swiftc VisionProGirlfriend/Services/SpeechTextSanitizer.swift \
+       scripts/test_speech_sanitizer.swift -o /tmp/tts-test && /tmp/tts-test
 ```
 
 ## 已知限制
@@ -115,8 +148,11 @@ python3 scripts/check_pbxproj.py
    缩放模拟。换成绑好骨的 USDZ 时，`PlaceholderAvatar.update(deltaTime:jawOpen:)` 里的
    `jawOpen`（0…1 音量）可以直接映射到真模型的 `jawOpen`。
 3. **没有语音输入。** 麦克风权限的 Info 描述已经写好，但 ASR 还没接，先用文字聊。
-4. **没有对话记忆裁剪。** 历史全量发给模型，轮次多了要加窗口/摘要。
-5. 单连接同时只能有一个合成会话；空闲约 120 秒服务端会断开（2201），代码里每 30 秒发一次 ping 保活。
+4. **历史是滑动窗口，不是真记忆。** 每次发 4000 字符以内的最近几轮，更早的丢掉。
+   想要「她记得三个月前说过的话」得加向量库或摘要。
+5. **清洗是保守的。** `SpeechTextSanitizer` 只删 Markdown 记号、代码块、链接、emoji、零宽字符，
+   不会去改写模型的话。念到英文长词或者颜文字还是会怪，想更好就得让模型少输出这类内容。
+6. 单连接同时只能有一个合成会话；空闲约 120 秒服务端会断开（2201），代码里每 30 秒发一次 ping 保活。
 
 ## 开发节奏
 

@@ -42,12 +42,22 @@ final class TTSAudioPlayer {
 
     private let speakingLock = NSLock()
     private var speakingCount = 0
+    private var silenceTask: DispatchWorkItem?
+
+    /// 播放**真正结束**（不是刚排进队列）时回调。
+    /// 句子之间有空档，不能拿「队列空了」当结束信号，否则状态栏会在每句之间乱跳。
+    /// 要静音一段时间后才算真的说完了。
+    private var onPlaybackFinished: (() -> Void)?
 
     /// 现在是不是正在出声（主线程读，不会卡 UI）
     var isSpeaking: Bool {
         speakingLock.lock()
         defer { speakingLock.unlock() }
         return speakingCount > 0
+    }
+
+    func setPlaybackFinishedHandler(_ handler: @escaping () -> Void) {
+        onPlaybackFinished = handler
     }
 
     private func setSpeaking(_ speaking: Bool) {
@@ -61,6 +71,17 @@ final class TTSAudioPlayer {
         if nowSilent {
             level.update(0)
         }
+    }
+
+    /// 连续静音超过阈值才算这一轮真的说完了。
+    private func armSilenceTimerLocked() {
+        silenceTask?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isSpeaking == false else { return }
+            self.onPlaybackFinished?()
+        }
+        silenceTask = work
+        queue.asyncAfter(deadline: .now() + 0.45, execute: work)
     }
 
     // MARK: - 对外接口
@@ -90,6 +111,7 @@ final class TTSAudioPlayer {
         queue.async { [weak self] in
             guard let self else { return }
             self.player.stop()
+            self.silenceTask?.cancel()
             self.speakingLock.lock()
             self.speakingCount = 0
             self.speakingLock.unlock()
@@ -179,13 +201,17 @@ final class TTSAudioPlayer {
             player.play()
         }
         setSpeaking(true)
-        player.scheduleBuffers(
-            [buffer],
+        silenceTask?.cancel()
+        // 注意：Swift 里是 scheduleBuffer（单数），没有 scheduleBuffers 这个方法
+        player.scheduleBuffer(
+            buffer,
             at: nil,
             options: [],
             completionCallbackType: .dataPlayedBack
         ) { [weak self] _ in
-            self?.setSpeaking(false)
+            guard let self else { return }
+            self.setSpeaking(false)
+            self.armSilenceTimerLocked()
         }
     }
 

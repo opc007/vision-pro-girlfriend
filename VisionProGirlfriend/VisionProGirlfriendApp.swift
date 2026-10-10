@@ -5,6 +5,10 @@ struct VisionProGirlfriendApp: App {
 
     @StateObject private var model = ChatViewModel()
 
+    // 全屏沉浸（关掉穿透，用户只看到内容）。想让人还能看见自己房间，
+    // 改成 `.mixed` 就行，其他代码不用动。
+    @State private var immersionStyle: ImmersionStyle = .full
+
     var body: some Scene {
         // 文字聊天窗口
         WindowGroup(id: AppIDs.chatWindow) {
@@ -18,6 +22,6 @@ struct VisionProGirlfriendApp: App {
             AvatarSceneView(levelSignal: model.audioPlayer.level)
                 .environmentObject(model)
         }
-        .immersiveStyle(.fullScreen)
+        .immersionStyle(selection: $immersionStyle, in: .full)
     }
 }

@@ -27,6 +27,12 @@ struct ChatView: View {
                 model.shutdown()
             }
         }
+        .onChange(of: model.input) { _, newValue in
+            // 插话：七宝还在说，用户就开始打字 —— 直接打断
+            if model.isReplying, !newValue.isEmpty {
+                model.interruptSpeaking()
+            }
+        }
     }
 
     // MARK: - 顶部
@@ -58,6 +64,13 @@ struct ChatView: View {
                     model.interruptSpeaking()
                 } label: {
                     Label("打断", systemImage: "stop.fill")
+                }
+            } else {
+                // 说话中：提示可以边说边打字打断
+                if model.isSpeaking {
+                    Text("说一句…直接打字就能打断她")
+                        .font(.caption2)
+                        .foregroundStyle(Color.secondary.opacity(0.7))
                 }
             }
 
