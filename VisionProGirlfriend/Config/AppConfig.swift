@@ -17,6 +17,8 @@ import Foundation
 /// - `MINIMAX_TTS_MODEL`  默认 `speech-2.8-turbo`
 /// - `MINIMAX_TTS_VOICE`  默认 `female-shaonv`（少女音）。其他常用：
 ///   `female-tianmei` 甜美 / `female-yujie` 御姐 / `qiaopi_mengmei` 俏皮萌妹
+/// - `ASR_LOCALE`         默认 `zh-CN`（普通话）。英文改成 `en-US`
+/// - `APP_PERSONA`        覆盖七宝的人设提示词
 struct AppConfig {
 
     // MARK: - DeepSeek
@@ -32,6 +34,9 @@ struct AppConfig {
     let minimaxWSBaseURL: String
     let minimaxModel: String
     let minimaxVoiceID: String
+
+    /// 语音识别语言。默认普通话，改成 `en-US` 就是英文。
+    let asrLocale: String
 
     /// 七宝的人设提示词。要求：短句、口语化、不要 Markdown，
     /// 因为这段文字会直接丢给 TTS 念出来。
@@ -55,6 +60,7 @@ struct AppConfig {
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         minimaxModel = value("MINIMAX_TTS_MODEL", "speech-2.8-turbo")
         minimaxVoiceID = value("MINIMAX_TTS_VOICE", "female-shaonv")
+        asrLocale = value("ASR_LOCALE", "zh-CN")
 
         personaPrompt = value(
             "APP_PERSONA",

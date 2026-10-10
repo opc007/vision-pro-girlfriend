@@ -7,7 +7,7 @@ import SwiftUI
 struct AvatarSceneView: View {
 
     /// 播放节点实时输出的音量（0…1）
-    let levelSignal: AudioLevelSignal
+    let levelSignal: LevelSignal
 
     var body: some View {
         RealityView { content in

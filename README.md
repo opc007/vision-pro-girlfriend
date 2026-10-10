@@ -12,8 +12,9 @@
 数据流：
 
 ```
-你打字 → DeepSeekClient(SSE) ─┬─→ 聊天窗口气泡
-                                └─→ SpeechTextSanitizer（去 Markdown/emoji，保留标点）
+你打字 ┐
+        ├─→ DeepSeekClient(SSE) ─┬─→ 聊天窗口气泡
+你说话 ┘  SFSpeechRecognizer      └─→ SpeechTextSanitizer（去 Markdown/emoji，保留标点）
                                        └─→ MiniMaxTTSClient(WebSocket t2a_v2_bidi)
                                                └─→ TTSAudioPlayer(AVAudioEngine 播放)
                                                        └─→ 实时音量 → 音量驱动 jawOpen
@@ -23,6 +24,25 @@
 
 七宝还在说的时候你开始打字，这一轮会自动中断（`task_cancel` + 停播放器）。
 顶栏也会出现「说一句…直接打字就能打断她」的提示。
+
+## 语音输入
+
+输入框左边有个麦克风按钮：
+
+- **点一下**开麦，**再点一下**收；说完停顿 1.6 秒也会自动收，不用再点
+- 麦克风外面那圈会随音量变大变小，说明它真的在听
+- 识别中的文字实时显示在输入框上方，确认没听错
+- 识别结束**自动发送**，走的是和打字完全一样的 DeepSeek → TTS 流程
+- 开麦会先把七宝正在说的话打断（边听边插话），否则她会把麦克风里自己的声音当成你说的话
+
+用的是系统 `SFSpeechRecognizer`：
+
+- 模拟器上走 Apple 的服务端识别，**模拟器需要联网**
+- 真机上如果装了对应语言的离线模型，会自动切离线识别，更快也不用把音频传出设备
+- 语言用 `ASR_LOCALE` 配，默认 `zh-CN`（普通话），英文设 `en-US`
+- 最多连说 30 秒
+
+首次点麦克风会弹权限申请（麦克风 + 语音识别）。拒了也能继续打字，聊天窗口顶部会说明原因。
 
 ## 环境要求
 
@@ -55,6 +75,7 @@ Xcode 菜单：**Product ▸ Scheme ▸ Edit Scheme… ▸ Run ▸ Arguments ▸
 | `MINIMAX_WS_BASE_URL` | | `wss://api.minimaxi.com` | **国际版账号改成 `wss://api.minimax.io`** |
 | `MINIMAX_TTS_MODEL` | | `speech-2.8-turbo` | |
 | `MINIMAX_TTS_VOICE` | | `female-shaonv` | 少女音。其他：`female-tianmei` 甜美 / `female-yujie` 御姐 / `qiaopi_mengmei` 俏皮萌妹 |
+| `ASR_LOCALE` | | `zh-CN` | 语音识别语言，英文设 `en-US` |
 | `APP_PERSONA` | | 内置人设 | 覆盖七宝的人设提示词 |
 
 代码里所有 Key 都从 `ProcessInfo.processInfo.environment` 读，仓库里没有任何密钥。
@@ -93,10 +114,12 @@ VisionProGirlfriend/
 ├─ VisionProGirlfriendApp.swift        App 入口：WindowGroup（聊天）+ ImmersiveSpace（3D）
 ├─ Config/AppConfig.swift              全部配置与 Key（只读环境变量）
 ├─ Chat/
-│  ├─ ChatView.swift                   聊天窗口 UI
-│  ├─ ChatViewModel.swift              串起 DeepSeek → TTS → 播放
+│  ├─ ChatView.swift                   聊天窗口 UI（含麦克风按钮）
+│  ├─ ChatViewModel.swift              串起 ASR → DeepSeek → TTS → 播放
 │  └─ ChatMessage.swift                一条消息
 ├─ Services/
+│  ├─ SpeechRecognizerService.swift    麦克风 → SFSpeechRecognizer → 文字
+│  ├─ AudioSessionController.swift     播放/录音的 AVAudioSession 唯一主人
 │  ├─ DeepSeekClient.swift             SSE 流式聊天
 │  ├─ MiniMaxTTSClient.swift           WebSocket t2a_v2_bidi 状态机
 │  ├─ SpeechTextSanitizer.swift        喂给 TTS 前的文本清洗（保标点）
@@ -104,7 +127,7 @@ VisionProGirlfriend/
 ├─ Avatar/
 │  ├─ AvatarSceneView.swift            RealityView 场景 + 逐帧订阅
 │  └─ PlaceholderAvatar.swift          占位 3D 人 + jawOpen 驱动
-└─ Support/                            小工具（hex 解码、ID 常量）
+└─ Support/                            小工具（hex 解码、电平信号、ID 常量）
 
 scripts/
 ├─ check_pbxproj.py                    不用 Xcode 的工程文件体检脚本
@@ -147,7 +170,8 @@ swiftc VisionProGirlfriend/Services/SpeechTextSanitizer.swift \
 2. **口型只是占位。** RealityKit 没有公开的 blendshape setter，所以用 jaw/mouth 两个 mesh 的
    缩放模拟。换成绑好骨的 USDZ 时，`PlaceholderAvatar.update(deltaTime:jawOpen:)` 里的
    `jawOpen`（0…1 音量）可以直接映射到真模型的 `jawOpen`。
-3. **没有语音输入。** 麦克风权限的 Info 描述已经写好，但 ASR 还没接，先用文字聊。
+3. **语音识别依赖系统能力。** 模拟器走 Apple 服务端识别（要联网、结果可能偏慢）；
+   真机装了对应语言的离线模型才走离线。识别质量由系统决定，没法调。
 4. **历史是滑动窗口，不是真记忆。** 每次发 4000 字符以内的最近几轮，更早的丢掉。
    想要「她记得三个月前说过的话」得加向量库或摘要。
 5. **清洗是保守的。** `SpeechTextSanitizer` 只删 Markdown 记号、代码块、链接、emoji、零宽字符，

@@ -1,25 +1,6 @@
 import AVFoundation
 import Foundation
 
-/// 线程安全的音量信号。音频线程写、渲染线程读，给口型用。
-final class AudioLevelSignal {
-    private let lock = NSLock()
-    private var storage: Float = 0
-
-    /// 0…1，1 表示最响
-    var value: Float {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage
-    }
-
-    func update(_ newValue: Float) {
-        lock.lock()
-        storage = newValue
-        lock.unlock()
-    }
-}
-
 /// 设备播放层：把 MiniMax 下发的 MP3 分句解码成 PCM，塞进 `AVAudioEngine` 连着播，
 /// 同时从播放节点实时取音量驱动口型。
 ///
@@ -30,7 +11,7 @@ final class AudioLevelSignal {
 /// 想要真正逐 chunk 无缝，后面可以换成 AudioToolbox 的 `AudioFileStreamOpen` 边收边解。
 final class TTSAudioPlayer {
 
-    let level = AudioLevelSignal()
+    let level = LevelSignal()
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -138,12 +119,8 @@ final class TTSAudioPlayer {
         guard !isConfigured else { return }
         isConfigured = true
 
-        #if os(visionOS)
-        // 只播不录，所以不申请麦克风权限。
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .default, options: [.duckOthers, .allowBluetoothA2DP])
-        try? session.setActive(true)
-        #endif
+        // 会话类别统一交给 AudioSessionController，播放和录音不要互相覆盖
+        AudioSessionController.activateForPlayback()
 
         let format = Self.defaultOutputFormat
         activeFormat = format

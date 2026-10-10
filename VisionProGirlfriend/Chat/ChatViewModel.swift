@@ -4,6 +4,7 @@ import SwiftUI
 /// 聊天窗口的 ViewModel。
 ///
 /// 职责分工：
+/// - `SpeechRecognizerService` 负责麦克风 → 文字
 /// - `DeepSeekClient` 负责拿流式文本
 /// - `MiniMaxTTSClient` 负责把文本变成声音
 /// - `TTSAudioPlayer` 负责在设备上播，并把音量喂给口型
@@ -18,13 +19,22 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var isSpeaking = false
     @Published private(set) var statusText = "准备中…"
 
+    /// 语音输入相关
+    @Published private(set) var isListening = false
+    @Published private(set) var partialSpeechText = ""
+    @Published private(set) var speechAvailable = true
+    /// 麦克风电平，给 UI 画条
+    @Published private(set) var micLevel: Float = 0
+
     let audioPlayer = TTSAudioPlayer()
+    let speechRecognizer = SpeechRecognizerService()
 
     private let config: AppConfig
     private let deepSeekClient: DeepSeekClient
     private var ttsClient: MiniMaxTTSClient?
     private var turnTask: Task<Void, Never>?
     private var currentTurnID: UUID?
+    private var micLevelTask: Task<Void, Never>?
 
     private let greeting = "你好呀，我是七宝～今天想聊点什么？"
 
@@ -40,6 +50,8 @@ final class ChatViewModel: ObservableObject {
         client.delegate = self
         self.ttsClient = client
 
+        speechRecognizer.delegate = self
+
         // 真的播完一段（不是「刚排进队列」），再把状态切回空闲
         audioPlayer.setPlaybackFinishedHandler { [weak self] in
             Task { @MainActor [weak self] in
@@ -54,10 +66,108 @@ final class ChatViewModel: ObservableObject {
     func bootstrap() {
         audioPlayer.prepare()
 
+        speechAvailable = speechRecognizer.isAvailable(localeIdentifier: config.asrLocale)
+        if !speechAvailable {
+            statusText = "这台设备不支持 \(config.asrLocale) 语音识别，先用文字聊。"
+            return
+        }
+
         if !config.missingKeysDescription.isEmpty {
             statusText = config.missingKeysDescription
         } else {
             statusText = "\(config.deepSeekModel) · \(config.minimaxModel)（\(config.minimaxVoiceID)）"
+        }
+    }
+
+    // MARK: - 语音输入
+
+    /// 点一下开始，再点一下结束。说完停顿 1.6 秒也会自己结束。
+    @MainActor
+    func toggleListening() {
+        if isListening {
+            speechRecognizer.stop()
+            return
+        }
+        startListening()
+    }
+
+    @MainActor
+    func startListening() {
+        guard !isListening else { return }
+
+        if !speechAvailable {
+            speechAvailable = speechRecognizer.isAvailable(localeIdentifier: config.asrLocale)
+            if !speechAvailable {
+                statusText = "这台设备不支持 \(config.asrLocale) 语音识别。"
+                return
+            }
+        }
+
+        statusText = "正在开麦…"
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            let granted = await self.speechRecognizer.requestAuthorization()
+            guard granted else {
+                self.handleSpeechDenied()
+                return
+            }
+
+            // 边听边插话：她正在说的话先停下来，不然会把自己的声音当成你说的话
+            self.interruptSpeaking()
+
+            do {
+                try self.speechRecognizer.start(localeIdentifier: self.config.asrLocale)
+                self.handleListeningStarted()
+            } catch {
+                self.handleSpeechError(error)
+            }
+        }
+    }
+
+    @MainActor
+    private func handleListeningStarted() {
+        isListening = true
+        partialSpeechText = ""
+        statusText = "在听，说完停顿一下就行"
+        startMicLevelPolling()
+    }
+
+    @MainActor
+    private func handleListeningStopped() {
+        isListening = false
+        partialSpeechText = ""
+        micLevelTask?.cancel()
+        micLevelTask = nil
+        micLevel = 0
+    }
+
+    @MainActor
+    private func handleSpeechDenied() {
+        isListening = false
+        statusText = "需要麦克风和语音识别权限才能说话。设置里开一下，或者继续打字。"
+    }
+
+    @MainActor
+    private func handleSpeechError(_ error: Error) {
+        handleListeningStopped()
+        statusText = error.localizedDescription
+    }
+
+    /// 电平条的数据源在音频线程上，定时搬一次到主线程
+    @MainActor
+    private func startMicLevelPolling() {
+        micLevelTask?.cancel()
+        micLevelTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let level = self.speechRecognizer.inputLevel.value
+                if abs(level - self.micLevel) > 0.02 {
+                    self.micLevel = level
+                }
+                try? await Task.sleep(nanoseconds: 60_000_000)
+            }
         }
     }
 
@@ -70,6 +180,10 @@ final class ChatViewModel: ObservableObject {
     func shutdown() {
         turnTask?.cancel()
         turnTask = nil
+        micLevelTask?.cancel()
+        micLevelTask = nil
+        speechRecognizer.cancel()
+        isListening = false
         ttsClient?.stop()
         audioPlayer.stopAll()
     }
@@ -80,8 +194,15 @@ final class ChatViewModel: ObservableObject {
     func send() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isReplying else { return }
-
         input = ""
+        startTurn(with: text)
+    }
+
+    /// 打字和语音最终都汇到这里
+    @MainActor
+    private func startTurn(with text: String) {
+        guard !text.isEmpty, !isReplying else { return }
+
         isReplying = true
         messages.append(ChatMessage(role: .user, text: text))
 
@@ -238,12 +359,37 @@ final class ChatViewModel: ObservableObject {
         case let .failed(message):
             statusText = "语音连接异常：\(message)"
         case .ready, .idle:
-            if !isReplying, !isSpeaking { statusText = "想好要聊什么了吗？" }
+            if !isReplying, !isListening, !isSpeaking { statusText = "想好要聊什么了吗？" }
         case .connecting:
             statusText = "语音通道连接中…"
         case .speaking:
             statusText = "七宝在说…"
         }
+    }
+
+    // MARK: - 语音识别结果
+
+    @MainActor
+    private func handleSpeechPartial(_ text: String) {
+        partialSpeechText = text
+    }
+
+    /// 识别结束：直接当成一轮用户发言发出去
+    @MainActor
+    private func handleSpeechFinal(_ text: String) {
+        handleListeningStopped()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            statusText = "没听清，再说一次？"
+            return
+        }
+        startTurn(with: trimmed)
+    }
+
+    @MainActor
+    private func handleSpeechFailure(_ message: String) {
+        handleListeningStopped()
+        statusText = "语音输入出错：\(message)"
     }
 }
 
@@ -260,6 +406,29 @@ extension ChatViewModel: MiniMaxTTSClientDelegate {
     nonisolated func ttsClient(_ client: MiniMaxTTSClient, didChangeState state: MiniMaxTTSClient.State) {
         Task { @MainActor [weak self] in
             self?.handleState(state)
+        }
+    }
+}
+
+// MARK: - SpeechRecognizerServiceDelegate
+
+extension ChatViewModel: SpeechRecognizerServiceDelegate {
+
+    nonisolated func speechRecognizer(_ service: SpeechRecognizerService, didUpdatePartialText text: String) {
+        Task { @MainActor [weak self] in
+            self?.handleSpeechPartial(text)
+        }
+    }
+
+    nonisolated func speechRecognizer(_ service: SpeechRecognizerService, didFinishWith text: String) {
+        Task { @MainActor [weak self] in
+            self?.handleSpeechFinal(text)
+        }
+    }
+
+    nonisolated func speechRecognizer(_ service: SpeechRecognizerService, didFailWith message: String) {
+        Task { @MainActor [weak self] in
+            self?.handleSpeechFailure(message)
         }
     }
 }

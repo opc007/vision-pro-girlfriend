@@ -210,7 +210,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "七宝";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "后续接入语音输入时需要麦克风权限。当前版本仅播放语音。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用来听你说话，把语音转成文字发给七宝。";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用系统语音识别把你说的话转成文字，不会保存音频。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -241,7 +242,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "七宝";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "后续接入语音输入时需要麦克风权限。当前版本仅播放语音。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用来听你说话，把语音转成文字发给七宝。";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用系统语音识别把你说的话转成文字，不会保存音频。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

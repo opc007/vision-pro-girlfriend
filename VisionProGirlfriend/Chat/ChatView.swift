@@ -119,7 +119,13 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if model.isListening {
+                listeningBanner
+            }
+
             HStack(spacing: 10) {
+                micButton
+
                 TextField("跟七宝说点什么…", text: $model.input, axis: .vertical)
                     .lineLimit(1...4)
                     .focused($isInputFocused)
@@ -141,9 +147,65 @@ struct ChatView: View {
                 .opacity(canSend ? 1 : 0.4)
             }
 
-            Text("语音输入、眨眼、注视跟随留给下一阶段；现在先用文字聊。")
+            Text("说话时直接打字就能打断她")
                 .font(.caption2)
                 .foregroundStyle(Color.secondary.opacity(0.6))
+        }
+    }
+
+    /// 点一下开麦，再点一下收；说完停顿 1.6 秒也会自己收
+    private var micButton: some View {
+        Button {
+            model.toggleListening()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(model.isListening ? Color.red : Color.secondary.opacity(0.16))
+                    .frame(width: 44, height: 44)
+
+                // 麦克风电平，让用户知道它真的在听
+                if model.isListening {
+                    Circle()
+                        .stroke(Color.red.opacity(0.35), lineWidth: 3)
+                        .frame(
+                            width: 44 + CGFloat(model.micLevel) * 22,
+                            height: 44 + CGFloat(model.micLevel) * 22
+                        )
+                }
+
+                Image(systemName: model.isListening ? "waveform" : "mic.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(model.isListening ? Color.white : Color.primary)
+            }
+            .frame(width: 52, height: 52)
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.speechAvailable)
+        .opacity(model.speechAvailable ? 1 : 0.35)
+        .help(model.isListening ? "点一下说完" : "点一下说话")
+    }
+
+    @ViewBuilder
+    private var listeningBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "mic.fill")
+                .font(.caption)
+                .foregroundStyle(Color.red)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.partialSpeechText.isEmpty ? "在听…" : model.partialSpeechText)
+                    .font(.callout)
+                    .foregroundStyle(model.partialSpeechText.isEmpty ? Color.secondary : Color.primary)
+                    .lineLimit(3)
+                Text("说完停顿一下就会自动发出去")
+                    .font(.caption2)
+                    .foregroundStyle(Color.secondary.opacity(0.7))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.red.opacity(0.08))
         }
     }
 
