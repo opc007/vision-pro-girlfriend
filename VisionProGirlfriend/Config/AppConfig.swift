@@ -18,6 +18,10 @@ import Foundation
 /// - `MINIMAX_TTS_VOICE`  默认 `female-shaonv`（少女音）。其他常用：
 ///   `female-tianmei` 甜美 / `female-yujie` 御姐 / `qiaopi_mengmei` 俏皮萌妹
 /// - `ASR_LOCALE`         默认 `zh-CN`（普通话）。英文改成 `en-US`
+/// - `AVATAR_MODEL_NAME`  默认 `qibao`。Bundle 里有同名 `.usdz` 就用真实模型，没有就回退占位人偶
+/// - `AVATAR_MODEL_SCALE` 默认 `1.0`。真实模型大小不对时调它
+/// - `AVATAR_MODEL_OFFSET_Y` 默认 `0`。真模型悬空/埋进地板时调它
+/// - `AVATAR_USE_CUSTOM_MODEL` 默认 `1`。设 `0` 强制用回占位人偶
 /// - `APP_PERSONA`        覆盖七宝的人设提示词
 struct AppConfig {
 
@@ -37,6 +41,19 @@ struct AppConfig {
 
     /// 语音识别语言。默认普通话，改成 `en-US` 就是英文。
     let asrLocale: String
+
+    /// 3D 形象。Bundle 里放了同名 `.usdz` 就用真实模型，没有就自动回退占位人偶。
+    ///
+    /// 怎么放：把 `qibao.usdz` 丢进 `VisionProGirlfriend/`，并在 Xcode 里
+    /// 勾上「Copy Bundle Resources」。名字对不上就用 `AVATAR_MODEL_NAME` 改。
+    let avatarModelName: String
+    /// 真实模型的缩放。不同建模软件导出的尺寸差很多，大了/小了改这个。
+    let avatarModelScale: Float
+    /// 真实模型的垂直偏移（米）。原点通常在脚底，站着就对了；
+    /// 悬空了给负数，埋进地板了给正数
+    let avatarModelOffsetY: Float
+    /// 置 0 可以强制用回占位人偶（做对比、或者模型有问题时先退出来）
+    let avatarUseCustomModel: Bool
 
     /// 七宝的人设提示词。要求：短句、口语化、不要 Markdown，
     /// 因为这段文字会直接丢给 TTS 念出来。
@@ -62,6 +79,13 @@ struct AppConfig {
         minimaxVoiceID = value("MINIMAX_TTS_VOICE", "female-shaonv")
         asrLocale = value("ASR_LOCALE", "zh-CN")
 
+        avatarModelName = value("AVATAR_MODEL_NAME", "qibao")
+        avatarModelScale = Float(value("AVATAR_MODEL_SCALE", "1.0")) ?? 1.0
+        avatarModelOffsetY = Float(value("AVATAR_MODEL_OFFSET_Y", "0")) ?? 0
+        avatarUseCustomModel = !["0", "false", "no", "off"].contains(
+            value("AVATAR_USE_CUSTOM_MODEL", "1").lowercased()
+        )
+
         personaPrompt = value(
             "APP_PERSONA",
             """
@@ -83,11 +107,20 @@ struct AppConfig {
 
     /// 缺 Key 时给 UI 看的提示，不写死任何密钥内容。
     var missingKeysDescription: String {
+        guard !missingKeys.isEmpty else { return "" }
+        return "缺少环境变量：\(missingKeys.joined(separator: "、"))。请在 Scheme ▸ Run ▸ Arguments ▸ Environment Variables 里补上。"
+    }
+
+    /// 只列名字，给状态栏这种放不下长句的地方用
+    var missingKeysShort: String {
+        missingKeys.joined(separator: "、")
+    }
+
+    private var missingKeys: [String] {
         var missing: [String] = []
         if !hasDeepSeekKey { missing.append("DEEPSEEK_API_KEY") }
         if !hasMiniMaxKey { missing.append("MINIMAX_API_KEY") }
-        guard !missing.isEmpty else { return "" }
-        return "缺少环境变量：\(missing.joined(separator: "、"))。请在 Scheme ▸ Run ▸ Arguments ▸ Environment Variables 里补上。"
+        return missing
     }
 
     // MARK: - 端点

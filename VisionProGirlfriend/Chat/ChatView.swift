@@ -153,36 +153,69 @@ struct ChatView: View {
         }
     }
 
-    /// 点一下开麦，再点一下收；说完停顿 1.6 秒也会自己收
+    /// 按下的那一刻。超过这个时长算「按住说话」，松手就发。
+    private static let holdThreshold: TimeInterval = 0.25
+    @State private var micPressBeganAt: Date?
+    /// 这次按压是我们**这一下**开的麦吗。用来区分「点按开麦」和「点按收麦」
+    @State private var micPressStartedIt = false
+
+    /// 按住说话为主，轻点保持为辅：
+    /// - 按住超过 0.25 秒 → 松手立刻结束并发送
+    /// - 轻点一下 → 开麦并保持（再轻点一下才收），手腕不方便长按时用
     private var micButton: some View {
-        Button {
-            model.toggleListening()
-        } label: {
-            ZStack {
+        micIcon
+            .contentShape(Circle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        // 一次按压只触发一次开麦，不然手指移动会反复调
+                        guard micPressBeganAt == nil else { return }
+                        micPressBeganAt = Date()
+                        // 先记下「开麦前是不是已经在听」，松手时才知道这一下该不该收
+                        micPressStartedIt = !model.isListening
+                        model.beginHoldToTalk()
+                    }
+                    .onEnded { _ in
+                        let beganAt = micPressBeganAt
+                        let startedIt = micPressStartedIt
+                        micPressBeganAt = nil
+                        micPressStartedIt = false
+                        guard let beganAt else { return }
+
+                        let held = Date().timeIntervalSince(beganAt)
+                        if held >= Self.holdThreshold || !startedIt {
+                            model.endHoldToTalk()
+                        }
+                        // 短按且这一下是开麦 → 保持开麦，等用户再点一下
+                    }
+            )
+            .disabled(!model.speechAvailable)
+            .opacity(model.speechAvailable ? 1 : 0.35)
+            .help(model.isListening ? "松开发送 · 轻点可以保持开麦" : "按住说话，松开发送")
+    }
+
+    /// 麦克风按钮的样子（按住/保持开麦时靠音量呼吸圈表示在听）
+    private var micIcon: some View {
+        ZStack {
+            Circle()
+                .fill(model.isListening ? Color.red : Color.secondary.opacity(0.16))
+                .frame(width: 44, height: 44)
+
+            // 麦克风电平，让用户知道它真的在听
+            if model.isListening {
                 Circle()
-                    .fill(model.isListening ? Color.red : Color.secondary.opacity(0.16))
-                    .frame(width: 44, height: 44)
-
-                // 麦克风电平，让用户知道它真的在听
-                if model.isListening {
-                    Circle()
-                        .stroke(Color.red.opacity(0.35), lineWidth: 3)
-                        .frame(
-                            width: 44 + CGFloat(model.micLevel) * 22,
-                            height: 44 + CGFloat(model.micLevel) * 22
-                        )
-                }
-
-                Image(systemName: model.isListening ? "waveform" : "mic.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(model.isListening ? Color.white : Color.primary)
+                    .stroke(Color.red.opacity(0.35), lineWidth: 3)
+                    .frame(
+                        width: 44 + CGFloat(model.micLevel) * 22,
+                        height: 44 + CGFloat(model.micLevel) * 22
+                    )
             }
-            .frame(width: 52, height: 52)
+
+            Image(systemName: model.isListening ? "waveform" : "mic.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(model.isListening ? Color.white : Color.primary)
         }
-        .buttonStyle(.plain)
-        .disabled(!model.speechAvailable)
-        .opacity(model.speechAvailable ? 1 : 0.35)
-        .help(model.isListening ? "点一下说完" : "点一下说话")
+        .frame(width: 52, height: 52)
     }
 
     @ViewBuilder
@@ -201,6 +234,16 @@ struct ChatView: View {
                     .foregroundStyle(Color.secondary.opacity(0.7))
             }
             Spacer(minLength: 0)
+
+            // 识别错了、或者说了一半不想说了，可以丢掉这次
+            Button {
+                model.cancelListening()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("丢掉这次识别")
         }
         .padding(10)
         .background {

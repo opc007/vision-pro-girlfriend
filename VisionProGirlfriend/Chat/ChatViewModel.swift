@@ -85,7 +85,7 @@ final class ChatViewModel: ObservableObject {
         }
 
         if !config.missingKeysDescription.isEmpty {
-            statusText = config.missingKeysDescription
+            statusText = "还差 Key：\(config.missingKeysShort)。配好再跑，详见 README。"
         } else {
             statusText = "\(config.deepSeekModel) · \(config.minimaxModel)（\(config.minimaxVoiceID)）"
         }
@@ -93,14 +93,43 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - 语音输入
 
-    /// 点一下开始，再点一下结束。说完停顿 1.6 秒也会自己结束。
+    /// 按住说话：**按下**就开麦。这一下必须先把她的声音停掉，
+    /// 否则麦克风会把她自己正在说的话听进来，然后当成你说的话发出去。
+    @MainActor
+    func beginHoldToTalk() {
+        guard !isListening else { return }
+        if isReplying || isSpeaking {
+            interruptSpeaking()
+        }
+        startListening()
+    }
+
+    /// 按住说话：**松手**就收尾，识别结果会自动发出去。
+    /// （说完停顿 1.6 秒也会自己收，所以松手早一点晚一点都能用）
+    @MainActor
+    func endHoldToTalk() {
+        guard isListening else { return }
+        speechRecognizer.stop()
+    }
+
+    /// 识别中想反悔：丢掉这次识别，不发送。
+    @MainActor
+    func cancelListening() {
+        guard isListening else { return }
+        speechRecognizer.cancel()
+        handleListeningStopped()
+        statusText = "这次没发送"
+    }
+
+    /// 轻点一下：开麦并保持，再轻点一下才收。
+    /// 和「按住说话」共存——按得久走按住路径，按得松走这个路径。
     @MainActor
     func toggleListening() {
         if isListening {
             speechRecognizer.stop()
-            return
+        } else {
+            beginHoldToTalk()
         }
-        startListening()
     }
 
     @MainActor
@@ -166,7 +195,7 @@ final class ChatViewModel: ObservableObject {
     @MainActor
     private func handleSpeechError(_ error: Error) {
         handleListeningStopped()
-        statusText = error.localizedDescription
+        statusText = FriendlyError.message(for: error, context: .speech)
     }
 
     /// 电平条的数据源在音频线程上，定时搬一次到主线程
@@ -346,7 +375,7 @@ final class ChatViewModel: ObservableObject {
     @MainActor
     private func failTurn(_ error: Error, replyID: UUID, turnID: UUID) {
         guard currentTurnID == turnID else { return }
-        let text = "出错了：\(error.localizedDescription)"
+        let text = FriendlyError.message(for: error, context: .chat)
         if let index = messages.firstIndex(where: { $0.id == replyID }) {
             if messages[index].text.isEmpty {
                 messages[index].text = text
@@ -380,7 +409,7 @@ final class ChatViewModel: ObservableObject {
     private func handleState(_ state: MiniMaxTTSClient.State) {
         switch state {
         case let .failed(message):
-            statusText = "语音连接异常：\(message)"
+            statusText = FriendlyError.ttsHint(forStateMessage: message)
         case .ready, .idle:
             if !isReplying, !isListening, !isSpeaking { statusText = "想好要聊什么了吗？" }
         case .connecting:

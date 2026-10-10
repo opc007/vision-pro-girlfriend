@@ -7,7 +7,7 @@
 1. Vision Pro（RealityKit）：显示 3D 角色、播音、动嘴
 2. DeepSeek：流式聊天（SSE）
 3. MiniMax：流式 TTS（WebSocket `t2a_v2_bidi`）
-4. 模型：七宝形象 → 绑骨 USDZ（**待做**，当前是基础几何体拼的占位人）
+4. 模型：七宝形象 → Bundle 里有 `qibao.usdz` 就用真模型，没有就回退占位人偶（见「换成自己的七宝」）
 
 数据流：
 
@@ -43,11 +43,58 @@
 想调手感就改 `AvatarPose.solve`：每个状态的头部俯仰/偏航/侧歪、眉毛抬起量、呼吸幅度
 都是里面的常数，改完跑一下 `scripts/test_avatar_pose.swift` 就能确认没飞出合理范围。
 
+## 换成自己的七宝（USDZ）
+
+App 支持直接加载真实模型。**没有模型也完全能跑**——自动回退到占位人偶，不会崩。
+
+### 怎么放
+
+1. 把模型文件命名成 `qibao.usdz`，放进 `VisionProGirlfriend/` 目录（和 `AppConfig.swift` 同级）
+2. 在 Xcode 里选中 `qibao.usdz`，勾上 **Copy Bundle Resources**（Target Membership 保持 App）
+3. 直接 `⌘R`
+
+换个名字就用环境变量 `AVATAR_MODEL_NAME`（别带 `.usdz` 后缀）。
+
+### 模型大小/位置不对
+
+不同建模软件导出的尺寸、原点差很多（有的原点在脚底，有的在中心）。悬空、埋进地板或者小得看不见时用环境变量调：
+
+```bash
+AVATAR_MODEL_SCALE=0.35      # 缩放
+AVATAR_MODEL_OFFSET_Y=-0.3   # 上下挪（米）
+```
+
+模型有问题想先退出来看看默认效果：`AVATAR_USE_CUSTOM_MODEL=0`，强制用占位人偶。
+
+### 什么情况下会回退占位
+
+| 情况 | 结果 |
+|---|---|
+| Bundle 里没有 `qibao.usdz` | 占位人偶（默认状态，不用做任何事） |
+| 文件在，但加载失败（损坏 / 不是合法 usdz） | 占位人偶 + 控制台一行 `[Avatar]` 日志 |
+| 模型名配成空 | 占位人偶 |
+
+三种情况**都不崩**，判断逻辑在 `AvatarModelPlan` 里，有单测覆盖。
+
+### 真模型的表情是怎么驱动的
+
+RealityKit 没有公开的 blendshape setter，所以口型还是用变换做的：
+
+- 在 USDZ 里把头命名成 `head`、下巴命名成 `jaw`，七宝就会跟着状态转头、低头、开口
+- 没命名的话只会做呼吸起伏和前后倾（不会是个木头桩子，但表情会少很多）
+- 眨眼、眉毛、呼吸这些状态量来自 `AvatarPose`，和占位人偶是同一份算解
+
+想换成真模型的 blendshape，把 `UsdzAvatar.update(deltaTime:jawOpen:state:)` 里的
+`jawOpen`（0…1 音量）接到真模型的 `jawOpen` 上就行。
+
 ## 语音输入
 
-输入框左边有个麦克风按钮：
+输入框左边有个麦克风按钮，**按住说话为主，轻点保持为辅**：
 
-- **点一下**开麦，**再点一下**收；说完停顿 1.6 秒也会自动收，不用再点
+- **按住**（超过 0.25 秒）就开麦，**松手立刻发送**
+- **轻点一下**则开麦并保持，再点一下才收——手腕不方便一直按着时用这个
+- 说完停顿 1.6 秒也会自动收，不用管按没按着
+- 识别过程中横幅右上角有个 ✕，可以丢掉这次识别不发送
 - 麦克风外面那圈会随音量变大变小，说明它真的在听
 - 识别中的文字实时显示在输入框上方，确认没听错
 - 识别结束**自动发送**，走的是和打字完全一样的 DeepSeek → TTS 流程
@@ -61,6 +108,28 @@
 - 最多连说 30 秒
 
 首次点麦克风会弹权限申请（麦克风 + 语音识别）。拒了也能继续打字，聊天窗口顶部会说明原因。
+
+### 插话：她说话时你按住麦克风
+
+按下的那一刻会**先停掉她的 TTS，再开麦**。顺序很关键——如果先开麦，她自己的声音会被
+麦克风听进去当成你说的话发出去，她就会开始复述自己。
+
+打字插话也一样：她在说的时候你开始打字，这一轮会自动中断（`task_cancel` + 停播放器）。
+
+### 出错时看到什么
+
+所有报错都翻译成人话了，顶栏和气泡里直接写「怎么办」，不甩错误码：
+
+| 情况 | 你会看到 |
+|---|---|
+| 没配 Key | 「还差 Key：DEEPSEEK_API_KEY、MINIMAX_API_KEY。配好再跑，详见 README。」 |
+| 没网 / 网断了 | 「设备没连上网络……」/「网络中途断了，会自动重连，再说一次就行。」 |
+| Key 不对 / 没余额 | 「DeepSeek 拒绝了请求，多半是 API Key 不对、没余额，或没开这个模型。」 |
+| 限流 | 「请求太频繁，等十几秒再试。」 |
+| 服务端开小差 | 「DeepSeek 服务端开小差了，稍后再试……」 |
+| 语音连接空闲被断 | 「语音连接空闲太久被服务端断开了，下一句会自动重连。」 |
+| 麦克风/识别权限被拒 | 「没有麦克风权限，去『设置 ▸ 隐私与安全性 ▸ 麦克风』里打开。」 |
+| 没听清 | 「没听清，再说一次？」 |
 
 ## 环境要求
 
@@ -94,6 +163,10 @@ Xcode 菜单：**Product ▸ Scheme ▸ Edit Scheme… ▸ Run ▸ Arguments ▸
 | `MINIMAX_TTS_MODEL` | | `speech-2.8-turbo` | |
 | `MINIMAX_TTS_VOICE` | | `female-shaonv` | 少女音。其他：`female-tianmei` 甜美 / `female-yujie` 御姐 / `qiaopi_mengmei` 俏皮萌妹 |
 | `ASR_LOCALE` | | `zh-CN` | 语音识别语言，英文设 `en-US` |
+| `AVATAR_MODEL_NAME` | | `qibao` | Bundle 里有同名 `.usdz` 就用真模型 |
+| `AVATAR_MODEL_SCALE` | | `1.0` | 真模型大小不对时调它 |
+| `AVATAR_MODEL_OFFSET_Y` | | `0` | 真模型悬空/埋进地板时调它 |
+| `AVATAR_USE_CUSTOM_MODEL` | | `1` | 设 `0` 强制用回占位人偶 |
 | `APP_PERSONA` | | 内置人设 | 覆盖七宝的人设提示词 |
 
 代码里所有 Key 都从 `ProcessInfo.processInfo.environment` 读，仓库里没有任何密钥。
@@ -145,18 +218,21 @@ VisionProGirlfriend/
 ├─ Avatar/
 │  ├─ AvatarSceneView.swift            RealityView 场景 + 逐帧订阅
 │  ├─ AvatarState.swift                四种状态 + 姿态解算（纯函数，有单测）
+│  ├─ AvatarModelPlan.swift            用真模型还是占位人偶（纯逻辑，有单测）
+│  ├─ BlinkTimer.swift                 眨眼节奏（纯逻辑，占位和真模型共用）
+│  ├─ DrivableAvatar.swift             形象协议 + AvatarFactory（决定加载哪个）
+│  ├─ UsdzAvatar.swift                 真实 USDZ 的加载与驱动
 │  └─ PlaceholderAvatar.swift          占位 3D 人，把 AvatarPose 摆到实体上
-└─ Support/                            小工具（hex 解码、电平信号、ID 常量）
-
-└─ Support/                            小工具（hex 解码、电平信号、ID 常量）
+└─ Support/                            小工具（hex 解码、电平信号、ID 常量、友好报错文案）
 
 scripts/
 ├─ check_pbxproj.py                    不用 Xcode 的工程文件体检脚本
 ├─ test_speech_sanitizer.swift         文本清洗的断言测试（15 项）
-└─ test_avatar_pose.swift              姿态解算的断言测试（41 项）
+├─ test_avatar_pose.swift              姿态解算的断言测试（41 项）
+└─ test_overnight.swift                模型回退/眨眼/友好提示的断言测试（42 项）
 ```
 
-两个测试都是纯 Swift、不依赖 Xcode 的框架，`swiftc` 直接编就能跑，全绿返回 0，可以进 CI。
+三个测试都是纯 Swift、不依赖 Xcode 的框架，`swiftc` 直接编就能跑，全绿返回 0，可以进 CI。
 
 ### 想改沉浸空间的观感
 
@@ -187,6 +263,20 @@ swiftc VisionProGirlfriend/Services/SpeechTextSanitizer.swift \
 
 swiftc VisionProGirlfriend/Avatar/AvatarState.swift \
        scripts/test_avatar_pose.swift -o /tmp/pose-test && /tmp/pose-test
+
+# 通宵任务新增的（模型回退 / 环境变量 / 眨眼 / 友好提示，42 项）
+swiftc VisionProGirlfriend/Avatar/AvatarModelPlan.swift \
+       VisionProGirlfriend/Avatar/BlinkTimer.swift \
+       VisionProGirlfriend/Support/FriendlyError.swift \
+       VisionProGirlfriend/Config/AppConfig.swift \
+       VisionProGirlfriend/Services/DeepSeekClient.swift \
+       VisionProGirlfriend/Services/MiniMaxTTSClient.swift \
+       VisionProGirlfriend/Services/TTSAudioPlayer.swift \
+       VisionProGirlfriend/Services/AudioSessionController.swift \
+       VisionProGirlfriend/Support/HexData.swift \
+       VisionProGirlfriend/Support/LevelSignal.swift \
+       VisionProGirlfriend/Support/AppIDs.swift \
+       scripts/test_overnight.swift -o /tmp/overnight-test && /tmp/overnight-test
 ```
 
 ## 已知限制
@@ -194,10 +284,10 @@ swiftc VisionProGirlfriend/Avatar/AvatarState.swift \
 1. **首句有 0.3~0.8 秒延迟。** MiniMax 的 WebSocket 流式目前只输出 mp3，没法边收边解，
    所以是「攒够一句 → 写临时文件 → AVAudioFile 解码 → 转换采样率 → 排队播放」。
    句子之间是连续的。想去掉这段延迟，下一步是换 AudioToolbox 的 `AudioFileStreamOpen` 边收边解。
-2. **3D 还是占位。** RealityKit 没有公开的 blendshape setter，所以表情是用 jaw/mouth/eye/brow
-   几个 mesh 的位移和缩放摆出来的，不是真的 blendshape。换成绑好骨的 USDZ 时，
-   `PlaceholderAvatar.update(deltaTime:jawOpen:state:)` 里的 `jawOpen`（0…1 音量）可以直接
-   映射到真模型的 `jawOpen` blendshape，`AvatarPose` 的其余部分换成真模型的动画参数即可。
+2. **表情不是真 blendshape。** RealityKit 没有公开的 blendshape setter，所以表情是用 jaw/mouth/eye/brow
+   几个 mesh 的位移和缩放摆出来的，不是真的 blendshape——真模型（USDZ）也一样，是靠变换做的。
+   要接真 blendshape，把 `UsdzAvatar.update(deltaTime:jawOpen:state:)` 里的 `jawOpen`
+   （0…1 音量）直接映射到模型的 `jawOpen` 上，`AvatarPose` 的其余常数换成真模型的动画参数即可。
    现在也不会看人 —— 眼神是脚本，不是眼动追踪。
 3. **语音识别依赖系统能力。** 模拟器走 Apple 服务端识别（要联网、结果可能偏慢）；
    真机装了对应语言的离线模型才走离线。识别质量由系统决定，没法调。

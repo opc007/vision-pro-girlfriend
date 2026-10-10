@@ -9,9 +9,12 @@ import UIKit
 /// 换真人模型时：把 `ModelEntity(named:)` 加载出来的实体挂到 `root` 上，
 /// 保留 `update(deltaTime:jawOpen:state:)` 里的驱动逻辑就行——
 /// `jawOpen` 是 0…1 的音量值，含义和真模型的 `jawOpen` blendshape 一致。
-final class PlaceholderAvatar {
+final class PlaceholderAvatar: DrivableAvatar {
 
     let root = Entity()
+    let sourceDescription = "占位人偶（Bundle 里没有 qibao.usdz）"
+    /// 占位人偶的原点在头部，所以要抬到视线高度
+    let worldPosition: SIMD3<Float> = [0, 1.35, -1.05]
 
     private let bodyNode = Entity()
     private let headNode = Entity()
@@ -26,10 +29,9 @@ final class PlaceholderAvatar {
     private let browRestY: Float = 0.038
     private var elapsed: Float = 0
 
-    // 眨眼状态机
-    private var nextBlinkAt: Float = 2.5
-    private var blinkStart: Float = -10
-    private static let blinkDuration: Float = 0.14
+    // 眨眼节奏。抽成 BlinkTimer 是为了和真实 USDZ 共用同一套，
+    // 而且这段逻辑能脱离 Xcode 单测。
+    private var blink = BlinkTimer()
 
     init() {
         root.name = "placeholder-avatar"
@@ -151,8 +153,8 @@ final class PlaceholderAvatar {
     func update(deltaTime: Float, jawOpen: Float, state: AvatarState) {
         elapsed += deltaTime
 
-        let blink = advanceBlink()
-        let pose = AvatarPose.solve(state: state, time: elapsed, jawOpen: jawOpen, blink: blink)
+        let blinkAmount = blink.advance(elapsed: elapsed)
+        let pose = AvatarPose.solve(state: state, time: elapsed, jawOpen: jawOpen, blink: blinkAmount)
 
         // 身体：呼吸起伏 + 前倾
         bodyNode.position.y = pose.bodyBob
@@ -179,18 +181,6 @@ final class PlaceholderAvatar {
         for brow in brows {
             brow.position.y = browRestY + 0.011 * pose.browRaise
         }
-    }
-
-    /// - Returns: 眨眼进度 0…1（0 = 没在眨，1 = 闭到最紧）
-    private func advanceBlink() -> Float {
-        if elapsed >= nextBlinkAt {
-            blinkStart = elapsed
-            // 每 2.5~6 秒眨一次，人看着才自然
-            nextBlinkAt = elapsed + 2.5 + Float.random(in: 0...3.5)
-        }
-        let progress = (elapsed - blinkStart) / Self.blinkDuration
-        guard progress >= 0, progress <= 1 else { return 0 }
-        return progress
     }
 
     // MARK: - 材质

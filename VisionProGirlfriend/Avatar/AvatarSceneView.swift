@@ -13,10 +13,16 @@ struct AvatarSceneView: View {
     /// 当前该摆什么状态：待机 / 在听 / 在想 / 在说
     let stateSignal: AvatarStateSignal
 
+    /// 由 App 传进来，AvatarFactory 靠它决定用真实模型还是占位
+    let config: AppConfig
+
     var body: some View {
         RealityView { content in
-            let avatar = PlaceholderAvatar()
-            avatar.root.position = [0, 1.35, -1.05]
+            // Bundle 里有 qibao.usdz 就用真模型，没有就用占位人偶——两种都不会崩
+            let avatar = AvatarFactory.make(config: config)
+            NSLog("[Avatar] 当前形象：\(avatar.sourceDescription)")
+
+            avatar.root.position = avatar.worldPosition
 
             let anchor = AnchorEntity(world: .zero)
             anchor.name = "avatar-anchor"
