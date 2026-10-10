@@ -1,0 +1,23 @@
+# Xcode / macOS
+.DS_Store
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# 本地密钥（如果之后改成 xcconfig / plist 方式注入 Key，记得加进来）
+*.xcconfig.local
+Secrets.plist
+.env
+.env.*
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
