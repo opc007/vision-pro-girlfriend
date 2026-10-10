@@ -12,20 +12,22 @@ final class PlaceholderAvatar {
 
     private let bodyNode = Entity()
     private let headNode = Entity()
-    private let jaw = ModelEntity(
-        mesh: .generateBox(size: [0.17, 0.10, 0.15], cornerRadius: 0.04),
-        materials: [Self.skinMaterial]
-    )
-    private let mouth = ModelEntity(
-        mesh: .generateSphere(radius: 0.05),
-        materials: [Self.mouthMaterial]
-    )
+    private let jaw: ModelEntity
+    private let mouth: ModelEntity
 
     private let jawRestY: Float = -0.075
     private var elapsed: Float = 0
 
     init() {
         root.name = "placeholder-avatar"
+        jaw = ModelEntity(
+            mesh: .generateBox(size: [0.17, 0.10, 0.15], cornerRadius: 0.04),
+            materials: [Self.skinMaterial]
+        )
+        mouth = ModelEntity(
+            mesh: .generateSphere(radius: 0.05),
+            materials: [Self.mouthMaterial]
+        )
         root.addChild(bodyNode)
         bodyNode.addChild(headNode)
 
@@ -41,7 +43,7 @@ final class PlaceholderAvatar {
         // 手臂
         for side: Float in [-1, 1] {
             let arm = ModelEntity(
-                mesh: .generateCapsule(height: 0.26, radius: 0.045),
+                mesh: .generateCylinder(height: 0.26, radius: 0.045),
                 materials: [Self.skinMaterial]
             )
             arm.name = side < 0 ? "arm-left" : "arm-right"
