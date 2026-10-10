@@ -21,3 +21,6 @@ Secrets.plist
 .build/
 .swiftpm/
 Packages/
+
+# local API keys
+.vp-keys.env
