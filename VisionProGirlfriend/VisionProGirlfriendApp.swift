@@ -19,8 +19,11 @@ struct VisionProGirlfriendApp: App {
 
         // 3D 人物所在的沉浸空间
         ImmersiveSpace(id: AppIDs.immersiveSpace) {
-            AvatarSceneView(levelSignal: model.audioPlayer.level)
-                .environmentObject(model)
+            AvatarSceneView(
+                levelSignal: model.audioPlayer.level,
+                stateSignal: model.avatarState
+            )
+            .environmentObject(model)
         }
         .immersionStyle(selection: $immersionStyle, in: .full)
     }

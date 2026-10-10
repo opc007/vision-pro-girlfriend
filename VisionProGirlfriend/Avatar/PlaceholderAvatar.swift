@@ -3,8 +3,11 @@ import UIKit
 
 /// 占位 3D 人：全部用 RealityKit 自带的基础几何体拼的，不依赖任何外部模型。
 ///
+/// 「这一帧该怎么摆」的算术全在 `AvatarPose`（纯函数，有单测）里，
+/// 这里只负责把算出来的值赋给实体。
+///
 /// 换真人模型时：把 `ModelEntity(named:)` 加载出来的实体挂到 `root` 上，
-/// 保留 `update(deltaTime:jawOpen:)` 里的口型驱动逻辑就行——
+/// 保留 `update(deltaTime:jawOpen:state:)` 里的驱动逻辑就行——
 /// `jawOpen` 是 0…1 的音量值，含义和真模型的 `jawOpen` blendshape 一致。
 final class PlaceholderAvatar {
 
@@ -12,11 +15,21 @@ final class PlaceholderAvatar {
 
     private let bodyNode = Entity()
     private let headNode = Entity()
+
     private let jaw: ModelEntity
     private let mouth: ModelEntity
+    private let eyes: [ModelEntity]
+    private let brows: [ModelEntity]
 
     private let jawRestY: Float = -0.075
+    private let eyeRestY: Float = 0.012
+    private let browRestY: Float = 0.038
     private var elapsed: Float = 0
+
+    // 眨眼状态机
+    private var nextBlinkAt: Float = 2.5
+    private var blinkStart: Float = -10
+    private static let blinkDuration: Float = 0.14
 
     init() {
         root.name = "placeholder-avatar"
@@ -28,6 +41,33 @@ final class PlaceholderAvatar {
             mesh: .generateSphere(radius: 0.05),
             materials: [Self.mouthMaterial]
         )
+        // `eyes` / `brows` 是 let 属性，不能直接 append，先用局部数组收集再一次性赋值
+        var builtEyes: [ModelEntity] = []
+        var builtBrows: [ModelEntity] = []
+        for side: Float in [-1, 1] {
+            // 眼睛
+            let eye = ModelEntity(
+                mesh: .generateSphere(radius: 0.017),
+                materials: [Self.eyeMaterial]
+            )
+            eye.name = side < 0 ? "eye-left" : "eye-right"
+            eye.position = [side * 0.045, eyeRestY, 0.098]
+            headNode.addChild(eye)
+            builtEyes.append(eye)
+
+            // 眉毛（跟着状态抬起）
+            let brow = ModelEntity(
+                mesh: .generateBox(size: [0.034, 0.006, 0.012], cornerRadius: 0.002),
+                materials: [Self.hairMaterial]
+            )
+            brow.name = side < 0 ? "brow-left" : "brow-right"
+            brow.position = [side * 0.045, browRestY, 0.100]
+            headNode.addChild(brow)
+            builtBrows.append(brow)
+        }
+        eyes = builtEyes
+        brows = builtBrows
+
         root.addChild(bodyNode)
         bodyNode.addChild(headNode)
 
@@ -79,17 +119,6 @@ final class PlaceholderAvatar {
         hair.scale = [1, 0.82, 1]
         headNode.addChild(hair)
 
-        // 眼睛
-        for side: Float in [-1, 1] {
-            let eye = ModelEntity(
-                mesh: .generateSphere(radius: 0.017),
-                materials: [Self.eyeMaterial]
-            )
-            eye.name = side < 0 ? "eye-left" : "eye-right"
-            eye.position = [side * 0.045, 0.012, 0.098]
-            headNode.addChild(eye)
-        }
-
         // 腮红
         for side: Float in [-1, 1] {
             let blush = ModelEntity(
@@ -118,20 +147,50 @@ final class PlaceholderAvatar {
     /// - Parameters:
     ///   - deltaTime: 上一帧到这一帧的秒数
     ///   - jawOpen: 音量，0…1
-    func update(deltaTime: Float, jawOpen: Float) {
+    ///   - state: 当前状态，决定头/眉/眼的身体语言
+    func update(deltaTime: Float, jawOpen: Float, state: AvatarState) {
         elapsed += deltaTime
 
-        // 呼吸 + 轻微左右晃，先让占位模型「活」着
-        bodyNode.position.y = sin(elapsed * 1.4) * 0.012
-        headNode.orientation = simd_quatf(angle: sin(elapsed * 0.65) * 0.06, axis: [0, 1, 0])
-        headNode.position.y = sin(elapsed * 1.4 + 0.6) * 0.004
+        let blink = advanceBlink()
+        let pose = AvatarPose.solve(state: state, time: elapsed, jawOpen: jawOpen, blink: blink)
 
-        let open = min(max(jawOpen, 0), 1)
+        // 身体：呼吸起伏 + 前倾
+        bodyNode.position.y = pose.bodyBob
+        bodyNode.orientation = simd_quatf(angle: pose.bodyLean, axis: [1, 0, 0])
+        bodyNode.scale = [pose.breathScale, pose.breathScale, pose.breathScale]
 
-        jaw.position.y = jawRestY - 0.024 * open
-        jaw.scale = [1, 1 - 0.16 * open, 1]
+        // 头：偏航(Y) → 侧滚(Z) → 俯仰(X)，按这个顺序叠
+        headNode.orientation = simd_quatf(angle: pose.headYaw, axis: [0, 1, 0])
+            * simd_quatf(angle: pose.headRoll, axis: [0, 0, 1])
+            * simd_quatf(angle: pose.headPitch, axis: [1, 0, 0])
 
+        // 嘴 + 下巴
+        let open = pose.mouthOpen
+        jaw.position.y = jawRestY - pose.jawDrop
+        jaw.scale = [1, pose.jawSquash, 1]
         mouth.scale = [1 + 0.22 * open, 0.16 + 2.4 * open, 0.34 + 0.45 * open]
+
+        // 眼睛：纵向压扁就是眨眼
+        for eye in eyes {
+            eye.scale = [1, max(pose.eyeOpen, 0.06), 1]
+        }
+
+        // 眉毛：说话/听的时候抬起来
+        for brow in brows {
+            brow.position.y = browRestY + 0.011 * pose.browRaise
+        }
+    }
+
+    /// - Returns: 眨眼进度 0…1（0 = 没在眨，1 = 闭到最紧）
+    private func advanceBlink() -> Float {
+        if elapsed >= nextBlinkAt {
+            blinkStart = elapsed
+            // 每 2.5~6 秒眨一次，人看着才自然
+            nextBlinkAt = elapsed + 2.5 + Float.random(in: 0...3.5)
+        }
+        let progress = (elapsed - blinkStart) / Self.blinkDuration
+        guard progress >= 0, progress <= 1 else { return 0 }
+        return progress
     }
 
     // MARK: - 材质

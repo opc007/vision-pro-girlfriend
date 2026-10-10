@@ -23,7 +23,25 @@
 ### 说话时可以直接打字打断
 
 七宝还在说的时候你开始打字，这一轮会自动中断（`task_cancel` + 停播放器）。
-顶栏也会出现「说一句…直接打字就能打断她」的提示。
+顶栏也会出现「说一句…直接打字就能打断她」的提示。语音输入也一样：开麦会先打断她正在说的话，
+否则她自己的声音会被识别成你说的话。
+
+## 七宝有反应了
+
+3D 不再只是嘴在动。她的状态跟着聊天流程走：
+
+| 状态 | 什么时候 | 表现 |
+|---|---|---|
+| **待机** | 没事发生 | 慢呼吸，头缓慢左右晃，每 2.5~6 秒眨一次眼 |
+| **在听** | 麦克风开着 | 头微微前倾，眼睛睁大，眉毛抬起，呼吸变快 |
+| **在想** | DeepSeek 在流式吐字 | 头歪向一边，眼睛左右扫，像在琢磨 |
+| **在说** | TTS 在播 | 跟着音量点头，眉毛随音量抬，嘴由音量驱动（`jawOpen`） |
+
+「这一帧该怎么摆」的算术全在 `Avatar/AvatarState.swift` 的 `AvatarPose` 里，**是纯函数、
+不碰 RealityKit**，所以能被单测覆盖（41 项）；RealityKit 那层只负责把算出来的值赋给实体。
+
+想调手感就改 `AvatarPose.solve`：每个状态的头部俯仰/偏航/侧歪、眉毛抬起量、呼吸幅度
+都是里面的常数，改完跑一下 `scripts/test_avatar_pose.swift` 就能确认没飞出合理范围。
 
 ## 语音输入
 
@@ -126,13 +144,19 @@ VisionProGirlfriend/
 │  └─ TTSAudioPlayer.swift             AVAudioEngine 播放 + 音量输出
 ├─ Avatar/
 │  ├─ AvatarSceneView.swift            RealityView 场景 + 逐帧订阅
-│  └─ PlaceholderAvatar.swift          占位 3D 人 + jawOpen 驱动
+│  ├─ AvatarState.swift                四种状态 + 姿态解算（纯函数，有单测）
+│  └─ PlaceholderAvatar.swift          占位 3D 人，把 AvatarPose 摆到实体上
+└─ Support/                            小工具（hex 解码、电平信号、ID 常量）
+
 └─ Support/                            小工具（hex 解码、电平信号、ID 常量）
 
 scripts/
 ├─ check_pbxproj.py                    不用 Xcode 的工程文件体检脚本
-└─ test_speech_sanitizer.swift         文本清洗的断言测试
+├─ test_speech_sanitizer.swift         文本清洗的断言测试（15 项）
+└─ test_avatar_pose.swift              姿态解算的断言测试（41 项）
 ```
+
+两个测试都是纯 Swift、不依赖 Xcode 的框架，`swiftc` 直接编就能跑，全绿返回 0，可以进 CI。
 
 ### 想改沉浸空间的观感
 
@@ -160,6 +184,9 @@ python3 scripts/check_pbxproj.py
 ```bash
 swiftc VisionProGirlfriend/Services/SpeechTextSanitizer.swift \
        scripts/test_speech_sanitizer.swift -o /tmp/tts-test && /tmp/tts-test
+
+swiftc VisionProGirlfriend/Avatar/AvatarState.swift \
+       scripts/test_avatar_pose.swift -o /tmp/pose-test && /tmp/pose-test
 ```
 
 ## 已知限制
@@ -167,9 +194,11 @@ swiftc VisionProGirlfriend/Services/SpeechTextSanitizer.swift \
 1. **首句有 0.3~0.8 秒延迟。** MiniMax 的 WebSocket 流式目前只输出 mp3，没法边收边解，
    所以是「攒够一句 → 写临时文件 → AVAudioFile 解码 → 转换采样率 → 排队播放」。
    句子之间是连续的。想去掉这段延迟，下一步是换 AudioToolbox 的 `AudioFileStreamOpen` 边收边解。
-2. **口型只是占位。** RealityKit 没有公开的 blendshape setter，所以用 jaw/mouth 两个 mesh 的
-   缩放模拟。换成绑好骨的 USDZ 时，`PlaceholderAvatar.update(deltaTime:jawOpen:)` 里的
-   `jawOpen`（0…1 音量）可以直接映射到真模型的 `jawOpen`。
+2. **3D 还是占位。** RealityKit 没有公开的 blendshape setter，所以表情是用 jaw/mouth/eye/brow
+   几个 mesh 的位移和缩放摆出来的，不是真的 blendshape。换成绑好骨的 USDZ 时，
+   `PlaceholderAvatar.update(deltaTime:jawOpen:state:)` 里的 `jawOpen`（0…1 音量）可以直接
+   映射到真模型的 `jawOpen` blendshape，`AvatarPose` 的其余部分换成真模型的动画参数即可。
+   现在也不会看人 —— 眼神是脚本，不是眼动追踪。
 3. **语音识别依赖系统能力。** 模拟器走 Apple 服务端识别（要联网、结果可能偏慢）；
    真机装了对应语言的离线模型才走离线。识别质量由系统决定，没法调。
 4. **历史是滑动窗口，不是真记忆。** 每次发 4000 字符以内的最近几轮，更早的丢掉。

@@ -28,6 +28,8 @@ final class ChatViewModel: ObservableObject {
 
     let audioPlayer = TTSAudioPlayer()
     let speechRecognizer = SpeechRecognizerService()
+    /// 3D 该摆什么姿态。渲染线程读，ViewModel 写。
+    let avatarState = AvatarStateSignal()
 
     private let config: AppConfig
     private let deepSeekClient: DeepSeekClient
@@ -40,6 +42,16 @@ final class ChatViewModel: ObservableObject {
 
     /// 发给模型的历史预算（字符数）。超了就把最早的丢掉，长对话不会把 token 撑爆。
     private let historyCharBudget = 4_000
+
+    /// 3D 姿态只有一条推导路径，避免各处改了状态忘了同步
+    private func refreshAvatarState() {
+        let state: AvatarState
+        if isSpeaking { state = .speaking }
+        else if isListening { state = .listening }
+        else if isReplying { state = .thinking }
+        else { state = .idle }
+        avatarState.set(state)
+    }
 
     init(config: AppConfig = AppConfig()) {
         self.config = config
@@ -129,6 +141,7 @@ final class ChatViewModel: ObservableObject {
     @MainActor
     private func handleListeningStarted() {
         isListening = true
+        refreshAvatarState()
         partialSpeechText = ""
         statusText = "在听，说完停顿一下就行"
         startMicLevelPolling()
@@ -137,6 +150,7 @@ final class ChatViewModel: ObservableObject {
     @MainActor
     private func handleListeningStopped() {
         isListening = false
+        refreshAvatarState()
         partialSpeechText = ""
         micLevelTask?.cancel()
         micLevelTask = nil
@@ -184,6 +198,7 @@ final class ChatViewModel: ObservableObject {
         micLevelTask = nil
         speechRecognizer.cancel()
         isListening = false
+        avatarState.set(.idle)
         ttsClient?.stop()
         audioPlayer.stopAll()
     }
@@ -204,6 +219,7 @@ final class ChatViewModel: ObservableObject {
         guard !text.isEmpty, !isReplying else { return }
 
         isReplying = true
+        refreshAvatarState()
         messages.append(ChatMessage(role: .user, text: text))
 
         // 第一轮把招呼语换掉，别让模型把招呼语当上下文
@@ -219,6 +235,7 @@ final class ChatViewModel: ObservableObject {
         statusText = "七宝正在想…"
         audioPlayer.stopAll()
         isSpeaking = false
+        refreshAvatarState()
 
         guard let tts = ttsClient else {
             statusText = "语音通道没建起来"
@@ -266,6 +283,7 @@ final class ChatViewModel: ObservableObject {
         audioPlayer.stopAll()
         isReplying = false
         isSpeaking = false
+        refreshAvatarState()
         statusText = "已打断"
     }
 
@@ -278,6 +296,7 @@ final class ChatViewModel: ObservableObject {
         messages = [ChatMessage(role: .assistant, text: greeting)]
         isReplying = false
         isSpeaking = false
+        refreshAvatarState()
         statusText = "重新开始"
     }
 
@@ -320,6 +339,7 @@ final class ChatViewModel: ObservableObject {
             messages[index].text = "（没拿到内容，检查一下 Key 和网络）"
         }
         isReplying = false
+        refreshAvatarState()
         statusText = isSpeaking ? "七宝在说…" : "想好要聊什么了吗？"
     }
 
@@ -335,6 +355,7 @@ final class ChatViewModel: ObservableObject {
             }
         }
         isReplying = false
+        refreshAvatarState()
         statusText = text
     }
 
@@ -342,6 +363,7 @@ final class ChatViewModel: ObservableObject {
     private func handleSentence(_ mp3Data: Data) {
         audioPlayer.enqueue(mp3: mp3Data)
         isSpeaking = true
+        refreshAvatarState()
         if isReplying { statusText = "七宝在说…" }
     }
 
@@ -349,6 +371,7 @@ final class ChatViewModel: ObservableObject {
     @MainActor
     private func handlePlaybackFinished() {
         isSpeaking = audioPlayer.isSpeaking
+        refreshAvatarState()
         if isReplying { statusText = "七宝在说…" }
         else { statusText = "想好要聊什么了吗？" }
     }
@@ -382,6 +405,11 @@ final class ChatViewModel: ObservableObject {
         guard !trimmed.isEmpty else {
             statusText = "没听清，再说一次？"
             return
+        }
+        // 她可能还在说上一句。先插话再发，否则 startTurn 的 !isReplying
+        // 会把这句话静默吞掉 —— 用户说了话却什么都没发生。
+        if isReplying {
+            interruptSpeaking()
         }
         startTurn(with: trimmed)
     }
