@@ -16,12 +16,29 @@ struct AvatarSceneView: View {
     /// 由 App 传进来，AvatarFactory 靠它决定用真实模型还是占位
     let config: AppConfig
 
-    var body: some View {
-        RealityView { content in
-            // Bundle 里有 qibao.usdz 就用真模型，没有就用占位人偶——两种都不会崩
-            let avatar = AvatarFactory.make(config: config)
-            NSLog("[Avatar] 当前形象：\(avatar.sourceDescription)")
+    /// 真实模型只能异步加载，而 `RealityView` 的构建闭包**不是** async 的，
+    /// 所以形象先在 `.task` 里解析好，再交给 `RealityView` 摆。
+    ///
+    /// 加载失败时 `AvatarFactory` 直接给占位人偶，`sourceDescription` 和之前一样，
+    /// `.id()` 不变 → 场景不会重建，也就不会闪一下。
+    @State private var avatar: DrivableAvatar?
 
+    var body: some View {
+        Group {
+            if let avatar {
+                scene(avatar)
+            }
+        }
+        .task {
+            let loaded = await AvatarFactory.make(config: config)
+            NSLog("[Avatar] 当前形象：\(loaded.sourceDescription)")
+            avatar = loaded
+        }
+    }
+
+    @ViewBuilder
+    private func scene(_ avatar: DrivableAvatar) -> some View {
+        RealityView { content in
             avatar.root.position = avatar.worldPosition
 
             let anchor = AnchorEntity(world: .zero)
@@ -37,5 +54,7 @@ struct AvatarSceneView: View {
                 )
             }
         }
+        // 形象换了才重建场景。占位 → 占位（加载失败回退）不会触发，所以不闪
+        .id(avatar.sourceDescription)
     }
 }

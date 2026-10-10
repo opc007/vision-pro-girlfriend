@@ -21,9 +21,13 @@ protocol DrivableAvatar: AnyObject {
 ///
 /// **这个工厂不会抛、不会崩**：`AvatarModelPlan` 先用纯逻辑判断，
 /// 真去加载之前还会再确认文件在不在。任何一步不行就静默退回占位人偶。
+///
+/// 注意这里是 `async`：RealityKit 的 `Entity(named:in:)` 是异步初始化器，
+/// visionOS SDK 上必须 `await`，同步调用直接编译不过。
+/// 所以调用方要在一个能 await 的地方（比如 `.task`）调它。
 enum AvatarFactory {
 
-    static func make(config: AppConfig, bundle: Bundle = .main) -> DrivableAvatar {
+    static func make(config: AppConfig, bundle: Bundle = .main) async -> DrivableAvatar {
         let name = config.avatarModelName
         let scale = config.avatarModelScale
 
@@ -31,7 +35,7 @@ enum AvatarFactory {
         let fileExists = bundle.url(forResource: name, withExtension: "usdz") != nil
         var loaded: Entity?
         if fileExists {
-            loaded = try? Entity(named: name, in: bundle)
+            loaded = try? await Entity(named: name, in: bundle)
         }
 
         let plan = AvatarModelPlan.resolve(
