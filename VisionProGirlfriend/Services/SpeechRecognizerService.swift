@@ -26,6 +26,9 @@ final class SpeechRecognizerService {
         case microphoneNotAuthorized
         case recognizerUnavailable(String)
         case engineStartFailed(String)
+        /// 拿不到任何可用的麦克风输入（采样率/声道数都是 0）。
+        /// 模拟器上没配音频输入设备时就是这个状态。
+        case microphoneInputUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -34,9 +37,11 @@ final class SpeechRecognizerService {
             case .microphoneNotAuthorized:
                 return "没有麦克风权限，去「设置 ▸ 隐私与安全性 ▸ 麦克风」里打开。"
             case let .recognizerUnavailable(locale):
-                return "这台设备不支持 \(locale) 语音识别。"
+                return "这台设备暂时用不了 \(locale) 语音识别，再试一次或者改用打字。"
             case let .engineStartFailed(reason):
                 return "麦克风打不开：\(reason)"
+            case .microphoneInputUnavailable:
+                return "没有检测到可用的麦克风输入。模拟器上请检查 Mac 的音频输入设备；没有输入设备时可以先用文字聊。"
             }
         }
     }
@@ -113,10 +118,16 @@ final class SpeechRecognizerService {
         request.shouldReportPartialResults = true
         request.taskHint = .dictation
         // 真机装了离线模型就走离线：更快，音频也不出设备。
-        // 模拟器通常没有离线模型，硬开会直接识别失败，所以先问一句。
+        // ⚠️ 模拟器上 `supportsOnDeviceRecognition` 有时返回 true 但根本没装模型，
+        // 硬开 `requiresOnDeviceRecognition` 会让识别直接失败（用户表现就是「没反应」），
+        // 所以模拟器一律走服务端识别。
+        #if targetEnvironment(simulator)
+        request.requiresOnDeviceRecognition = false
+        #else
         if recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
+        #endif
         recognitionRequest = request
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -151,8 +162,15 @@ final class SpeechRecognizerService {
         AudioSessionController.activateForRecording()
 
         let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        // ⚠️ 没有输入设备时（模拟器上很常见）这里是 0 Hz。拿 0 Hz 的格式去
+        // installTap 会直接抛 Objective-C 异常，用户看到的是毫无提示的崩溃。
+        // 所以先问一句，把「没麦克风」变成一句人话。
+        guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
+            cleanUp()
+            throw ServiceError.microphoneInputUnavailable
+        }
+        inputNode.installTap(onBus: 0, bufferSize: 2048, format: recordingFormat) { [weak self] buffer, _ in
             guard let self else { return }
             request.append(buffer)
             self.updateInputLevel(buffer)

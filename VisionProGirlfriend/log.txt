@@ -1,0 +1,4 @@
+VisionProGirlfriendApp.swift:1:8: error: no such module 'SwiftUI'
+import SwiftUI
+       ^
+error: fatalError

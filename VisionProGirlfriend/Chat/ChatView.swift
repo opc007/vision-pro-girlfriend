@@ -189,8 +189,11 @@ struct ChatView: View {
                         // 短按且这一下是开麦 → 保持开麦，等用户再点一下
                     }
             )
-            .disabled(!model.speechAvailable)
-            .opacity(model.speechAvailable ? 1 : 0.35)
+            // ⚠️ 这里**不能**用 .disabled(!model.speechAvailable)：
+            // 模拟器上 SFSpeechRecognizer(zh-CN).isAvailable 经常是 false
+            // （没装离线模型），一禁用按钮就变成死按钮，用户点了完全没反应。
+            // 不可用时改成给出可见提示，按下去会告诉他到底为什么。
+            .opacity(model.isListening ? 1 : 0.9)
             .help(model.isListening ? "松开发送 · 轻点可以保持开麦" : "按住说话，松开发送")
     }
 
@@ -214,6 +217,14 @@ struct ChatView: View {
             Image(systemName: model.isListening ? "waveform" : "mic.fill")
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(model.isListening ? Color.white : Color.primary)
+
+            // 识别不可用时给个看得见的角标（但仍然可以按，按了会说明原因）
+            if !model.speechAvailable && !model.isListening {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .offset(x: 16, y: -16)
+            }
         }
         .frame(width: 52, height: 52)
     }
