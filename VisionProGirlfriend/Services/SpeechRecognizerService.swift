@@ -80,16 +80,40 @@ final class SpeechRecognizerService {
         SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))?.isAvailable ?? false
     }
 
-    /// 语音识别 + 麦克风两项权限
-    @discardableResult
-    func requestAuthorization() async -> Bool {
-        let speechGranted = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+    /// 语音识别 + 麦克风两项权限的结果。
+    ///
+    /// 以前只返回 Bool，用户看到的是一句「需要权限」，不知道该去设置里开哪一项——
+    /// 而这两项是**分开授权**的，只开一个没用。分开报才知道到底缺哪个。
+    enum AuthorizationOutcome {
+        case granted
+        case speechDenied
+        case microphoneDenied
+
+        var isGranted: Bool { self == .granted }
+    }
+
+    /// 要语音识别 + 麦克风两项权限
+    func requestAuthorization() async -> AuthorizationOutcome {
+        // 已经授权过就直接走，不要重复调 requestAuthorization：
+        // 重复调在部分系统版本上既不弹窗也不回调，用户表现就是「按了没反应」。
+        if SFSpeechRecognizer.authorizationStatus() == .authorized {
+            return await requestMicrophone()
+        }
+
+        let status = await withCheckedContinuation {
+            (continuation: CheckedContinuation<SFSpeechRecognizerAuthorizationStatus, Never>) in
             SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status == .authorized)
+                continuation.resume(returning: status)
             }
         }
-        guard speechGranted else { return false }
-        return await AudioSessionController.requestMicrophonePermission()
+        guard status == .authorized else {
+            return .speechDenied      // denied / restricted / notDetermined 都走这里
+        }
+        return await requestMicrophone()
+    }
+
+    private func requestMicrophone() async -> AuthorizationOutcome {
+        await AudioSessionController.requestMicrophonePermission() ? .granted : .microphoneDenied
     }
 
     // MARK: - 录音

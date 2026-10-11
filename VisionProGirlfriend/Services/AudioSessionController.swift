@@ -21,12 +21,17 @@ enum AudioSessionController {
 
     /// 录音：ASR 采音。`.defaultToSpeaker` 保证七宝的声音仍然从扬声器出，
     /// 这样边听边放也不会把声音掐掉。
+    ///
+    /// mode 用 `.voiceChat` 而不是 `.measurement`：
+    /// `.measurement` 是给测量类 App 用的，它会**关掉自动增益和降噪**，
+    /// 麦克风采到的声音会非常小甚至全是底噪，语音识别基本听不出人在说什么。
+    /// `.voiceChat` 才是「有人在说话」场景该用的模式（带 AGC + 回声消除）。
     static func activateForRecording() {
         #if os(visionOS)
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(
             .playAndRecord,
-            mode: .measurement,
+            mode: .voiceChat,
             options: [.defaultToSpeaker, .allowBluetooth]
         )
         try? session.setActive(true, options: .notifyOthersOnDeactivation)

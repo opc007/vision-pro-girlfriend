@@ -108,6 +108,47 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - 语音输入
 
+    // MARK: 按住说话的手势状态
+    //
+    // 刻意放在 ViewModel 而不是 View 的 @State 里：
+    // 手势判定（按了多久、这一下是开麦还是收麦）是业务规则，不是视图状态。
+    // 放 @State 的话，视图重建就可能把它清掉，而这里一旦清掉，松手会被吞——
+    // 表现就是「按住了但松手没反应，麦克风一直开着」。
+
+    /// 一次按压的起点
+    private var pressBeganAt: Date?
+    /// 这一下按压，是我们按下的瞬间才开麦的（区分「点按开麦」和「点按收麦」）
+    private var pressStartedIt = false
+    /// 短于这个算「轻点」，长于它算「按住说话」
+    private let holdThreshold: TimeInterval = 0.25
+
+    /// 按下的那一刻（手指或鼠标）。只做「记录 + 开麦」，收尾留给松手。
+    @MainActor
+    func micPressDown() {
+        guard pressBeganAt == nil else { return }   // 一次按压只触发一次
+        pressBeganAt = Date()
+        pressStartedIt = !isListening
+        voiceStage = "① 收到按下"
+        beginHoldToTalk()
+    }
+
+    /// 松开的那一刻。
+    /// - 按得久 → 按住说话，松手就发送
+    /// - 按得松且这一下是开麦 → 保持开麦（再点一下才收）
+    @MainActor
+    func micPressUp() {
+        let beganAt = pressBeganAt
+        let startedIt = pressStartedIt
+        pressBeganAt = nil
+        pressStartedIt = false
+        guard let beganAt else { return }
+
+        let held = Date().timeIntervalSince(beganAt)
+        if held >= holdThreshold || !startedIt {
+            endHoldToTalk()
+        }
+    }
+
     /// 按住说话：**按下**就开麦。这一下必须先把她的声音停掉，
     /// 否则麦克风会把她自己正在说的话听进来，然后当成你说的话发出去。
     @MainActor
@@ -181,9 +222,15 @@ final class ChatViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
 
-            let granted = await self.speechRecognizer.requestAuthorization()
-            guard granted else {
-                self.handleSpeechDenied()
+            let outcome = await self.speechRecognizer.requestAuthorization()
+            switch outcome {
+            case .granted:
+                break
+            case .speechDenied:
+                self.handleSpeechDenied(speechOnly: true)
+                return
+            case .microphoneDenied:
+                self.handleSpeechDenied(speechOnly: false)
                 return
             }
 
@@ -251,14 +298,21 @@ final class ChatViewModel: ObservableObject {
     }
 
     @MainActor
-    private func handleSpeechDenied() {
+    private func handleSpeechDenied(speechOnly: Bool) {
         isStartingListening = false
         stopWhenListeningStarts = false
         permissionWatchdog?.cancel()
         permissionWatchdog = nil
         isListening = false
-        voiceStage = "✗ 授权被拒"
-        statusText = "需要麦克风和语音识别权限才能说话。到「设置 ▸ 隐私与安全性」里把麦克风和语音识别打开，或者继续打字。"
+
+        // 两项是分开授权的，必须告诉用户到底缺哪一个，否则他会把两个都看一遍
+        if speechOnly {
+            voiceStage = "✗ 缺语音识别权限"
+            statusText = "缺「语音识别」权限。到「设置 ▸ 隐私与安全性 ▸ 语音识别」里打开，或者继续打字。"
+        } else {
+            voiceStage = "✗ 缺麦克风权限"
+            statusText = "缺「麦克风」权限。到「设置 ▸ 隐私与安全性 ▸ 麦克风」里打开，或者继续打字。\n（模拟器还要在 Mac 的隐私设置里给 visionOS Simulator 打开）"
+        }
     }
 
     @MainActor

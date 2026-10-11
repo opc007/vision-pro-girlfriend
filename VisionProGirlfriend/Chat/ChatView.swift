@@ -162,41 +162,23 @@ struct ChatView: View {
         }
     }
 
-    /// 按下的那一刻。超过这个时长算「按住说话」，松手就发。
-    private static let holdThreshold: TimeInterval = 0.25
-    @State private var micPressBeganAt: Date?
-    /// 这次按压是我们**这一下**开的麦吗。用来区分「点按开麦」和「点按收麦」
-    @State private var micPressStartedIt = false
-
     /// 按住说话为主，轻点保持为辅：
-    /// - 按住超过 0.25 秒 → 松手立刻结束并发送
+    /// - 按住 → 松手立刻结束并发送
     /// - 轻点一下 → 开麦并保持（再轻点一下才收），手腕不方便长按时用
+    ///
+    /// 按下/松开的判定全在 `ChatViewModel.micPressDown/micPressUp` 里
+    /// （手势状态放 ViewModel，不放 View 的 @State），
+    /// 这里只负责把 touch 接过去。
     private var micButton: some View {
         micIcon
-            .contentShape(Circle())
+            // 命中区域放大到 64pt 方块，不是 52pt 圆：
+            // 模拟器上用鼠标点，小圆很难点中，点不中在用户看来就是「没反应」
+            .frame(width: 64, height: 64)
+            .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        // 一次按压只触发一次开麦，不然手指移动会反复调
-                        guard micPressBeganAt == nil else { return }
-                        micPressBeganAt = Date()
-                        // 先记下「开麦前是不是已经在听」，松手时才知道这一下该不该收
-                        micPressStartedIt = !model.isListening
-                        model.beginHoldToTalk()
-                    }
-                    .onEnded { _ in
-                        let beganAt = micPressBeganAt
-                        let startedIt = micPressStartedIt
-                        micPressBeganAt = nil
-                        micPressStartedIt = false
-                        guard let beganAt else { return }
-
-                        let held = Date().timeIntervalSince(beganAt)
-                        if held >= Self.holdThreshold || !startedIt {
-                            model.endHoldToTalk()
-                        }
-                        // 短按且这一下是开麦 → 保持开麦，等用户再点一下
-                    }
+                    .onChanged { _ in model.micPressDown() }
+                    .onEnded { _ in model.micPressUp() }
             )
             // ⚠️ 这里**不能**用 .disabled(!model.speechAvailable)：
             // 模拟器上 SFSpeechRecognizer(zh-CN).isAvailable 经常是 false
