@@ -26,6 +26,13 @@ final class ChatViewModel: ObservableObject {
     /// 麦克风电平，给 UI 画条
     @Published private(set) var micLevel: Float = 0
 
+    /// 语音链路现在走到哪一步了。
+    ///
+    /// 专门为「点了没反应」这种情况做的自诊断：以前所有失败都挤在同一行状态栏里，
+    /// 还会被别的事覆盖掉，用户只知道自己点了但不知道卡在哪。
+    /// 现在麦克风下面常驻一行短步骤，卡在权限、引擎还是识别一眼就能看出来。
+    @Published private(set) var voiceStage = ""
+
     let audioPlayer = TTSAudioPlayer()
     let speechRecognizer = SpeechRecognizerService()
     /// 3D 该摆什么姿态。渲染线程读，ViewModel 写。
@@ -107,6 +114,7 @@ final class ChatViewModel: ObservableObject {
     func beginHoldToTalk() {
         guard !isListening, !isStartingListening else { return }
         stopWhenListeningStarts = false
+        voiceStage = "① 收到按下"
         if isReplying || isSpeaking {
             interruptSpeaking()
         }
@@ -118,6 +126,7 @@ final class ChatViewModel: ObservableObject {
     @MainActor
     func endHoldToTalk() {
         if isListening {
+            voiceStage = "⑤ 松手了，收尾中"
             speechRecognizer.stop()
             return
         }
@@ -127,6 +136,7 @@ final class ChatViewModel: ObservableObject {
         // 所以记下来，等真的开始了立刻收。
         guard isStartingListening else { return }
         stopWhenListeningStarts = true
+        voiceStage = "⑤ 已松手，等引擎起来就收"
         statusText = "松手了，正在收尾…"
     }
 
@@ -136,6 +146,7 @@ final class ChatViewModel: ObservableObject {
         guard isListening else { return }
         speechRecognizer.cancel()
         handleListeningStopped()
+        voiceStage = "已取消"
         statusText = "这次没发送"
     }
 
@@ -164,6 +175,7 @@ final class ChatViewModel: ObservableObject {
         }
 
         statusText = "正在开麦…"
+        voiceStage = "② 等授权（最多 10 秒）"
         startPermissionWatchdog()
 
         Task { [weak self] in
@@ -174,6 +186,8 @@ final class ChatViewModel: ObservableObject {
                 self.handleSpeechDenied()
                 return
             }
+
+            self.voiceStage = "③ 授权通过，起引擎"
 
             // 边听边插话：她正在说的话先停下来，不然会把自己的声音当成你说的话
             self.interruptSpeaking()
@@ -196,6 +210,7 @@ final class ChatViewModel: ObservableObject {
             guard !Task.isCancelled else { return }
             guard let self, self.isStartingListening, !self.isListening else { return }
             self.isStartingListening = false
+            self.voiceStage = "✗ 10 秒没等到授权"
             self.statusText = "开麦卡住了：没等到麦克风 / 语音识别授权。到「设置 ▸ 隐私与安全性」里把麦克风和语音识别打开，再点一次麦克风。"
         }
     }
@@ -217,6 +232,7 @@ final class ChatViewModel: ObservableObject {
         }
 
         statusText = "在听，说完停顿一下就行"
+        voiceStage = "④ 引擎已启动，正在听"
         startMicLevelPolling()
     }
 
@@ -241,13 +257,17 @@ final class ChatViewModel: ObservableObject {
         permissionWatchdog?.cancel()
         permissionWatchdog = nil
         isListening = false
+        voiceStage = "✗ 授权被拒"
         statusText = "需要麦克风和语音识别权限才能说话。到「设置 ▸ 隐私与安全性」里把麦克风和语音识别打开，或者继续打字。"
     }
 
     @MainActor
     private func handleSpeechError(_ error: Error) {
         handleListeningStopped()
-        statusText = FriendlyError.message(for: error, context: .speech)
+        let hint = FriendlyError.message(for: error, context: .speech)
+        // 错误全文给状态栏（那里有两行），步骤行只放短标签
+        voiceStage = hint.contains("麦克风输入") ? "✗ 没有麦克风输入" : "✗ 开麦失败，看顶部"
+        statusText = hint
     }
 
     /// 电平条的数据源在音频线程上，定时搬一次到主线程
@@ -260,6 +280,7 @@ final class ChatViewModel: ObservableObject {
                 let level = self.speechRecognizer.inputLevel.value
                 if abs(level - self.micLevel) > 0.02 {
                     self.micLevel = level
+                    self.voiceStage = "④ 在听 · 音量 \(Int(level * 100))"
                 }
                 try? await Task.sleep(nanoseconds: 60_000_000)
             }
@@ -492,6 +513,7 @@ final class ChatViewModel: ObservableObject {
     @MainActor
     private func handleSpeechFinal(_ text: String) {
         handleListeningStopped()
+        voiceStage = "⑥ 识别完成：\(text.prefix(12))"
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             statusText = "没听清，再说一次？"

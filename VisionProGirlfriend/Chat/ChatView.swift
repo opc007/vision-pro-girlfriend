@@ -147,6 +147,15 @@ struct ChatView: View {
                 .opacity(canSend ? 1 : 0.4)
             }
 
+            // 语音链路走到哪一步了。「点了没反应」的时候看这一行就知道卡在哪
+            Text(model.voiceStage.isEmpty ? "语音输入待命" : model.voiceStage)
+                .font(.caption2)
+                .foregroundStyle(
+                    model.voiceStage.hasPrefix("✗")
+                        ? Color.red
+                        : (model.isListening ? Color.green : Color.secondary.opacity(0.6))
+                )
+
             Text("说话时直接打字就能打断她")
                 .font(.caption2)
                 .foregroundStyle(Color.secondary.opacity(0.6))
